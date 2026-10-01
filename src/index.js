@@ -80,7 +80,7 @@ client.commands.set(
 const PORT =
     Number(
         process.env.PORT
-    ) || 3000;
+    ) || 4000;
 
 http.createServer(
     (req, res) => {

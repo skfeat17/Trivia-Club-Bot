@@ -14,7 +14,7 @@ function permanentTriviaEmbed() {
             "Test your knowledge across **Genshin Impact**, **Honkai: Star Rail**, **Wuthering Waves**, **Zenless Zone Zero**, and **Pokémon**.\n\n" +
             "Click the button below to receive one trivia question.\n\n" +
             "⏳ **Cooldown:** 24 hours\n" +
-            "💰 **Reward:** 10–100 Mora for a correct answer\n\n" +
+            "💰 **Reward:** 20–50 Mora for a correct answer\n\n" +
             "❌ Incorrect answers receive no Mora."
         )
         .setFooter({
