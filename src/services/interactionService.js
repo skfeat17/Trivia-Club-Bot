@@ -358,13 +358,26 @@ async function handleTriviaAnswer(
     | CORRECT ANSWER
     |--------------------------------------------------------------------------
     */
+function generateReward() {
+    const roll = Math.random() * 100;
 
+    if (roll < 88) {
+        return Math.floor(Math.random() * 11) + 20; // 20–30 | 88%
+    }
+
+    if (roll < 94) {
+        return Math.floor(Math.random() * 11) + 30; // 30–40 | 6%
+    }
+
+    if (roll < 98) {
+        return Math.floor(Math.random() * 6) + 40; // 40–45 | 4%
+    }
+
+    return Math.floor(Math.random() * 6) + 45; // 45–50 | 2%
+}
     if (correct) {
         const reward =
-            generateReward(
-                20,
-                50
-            );
+            generateReward();
 
 
         /*
