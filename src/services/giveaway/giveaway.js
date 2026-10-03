@@ -37,7 +37,8 @@ const {
 const timers = new Map();
 
 // Keeps the original slash interaction available while the bot stays online.
-// It cannot survive a process restart, so automatic/restarted endings use a channel message.
+// It cannot survive a process restart. Post-restart Discord UI updates are
+// therefore skipped rather than using normal channel permissions.
 const activeInteractions = new Map();
 
 
@@ -394,7 +395,7 @@ async function startGiveaway(
         // ----------------------------------------------------
 
         // IMPORTANT:
-        // Do NOT use interaction.channel.send().
+        // Do NOT use channel.send().
         // The bot operates through user-level interaction/webhook
         // permissions only. The public giveaway is a NON-EPHEMERAL
         // follow-up sent after the private confirmation above.
@@ -870,42 +871,38 @@ async function endGiveaway(
         // DISABLE PARTICIPATE BUTTON
         // --------------------------------------------------------
 
-        try {
+        // User-level architecture:
+        // Never fetch the channel or message through the Discord client.
+        // If the original interaction is still alive, edit the public
+        // follow-up through its interaction webhook. After restart/expiry,
+        // silently skip the UI update.
+        const uiInteraction =
+            followUpInteraction ||
+            activeInteractions.get(current.id) ||
+            null;
 
-            const channel =
-                await client.channels.fetch(
-                    current.channelId
+        if (uiInteraction?.webhook && current.messageId) {
+            try {
+                await uiInteraction.webhook.editMessage(
+                    current.messageId,
+                    {
+                        embeds: [
+                            createGiveawayEmbed(
+                                current,
+                                participants.length
+                            ),
+                        ],
+                        components: [
+                            createParticipateRow(
+                                current.id,
+                                true
+                            ),
+                        ],
+                    }
                 );
-
-            const message =
-                await channel.messages.fetch(
-                    current.messageId
-                );
-
-            await message.edit({
-
-                embeds: [
-                    createGiveawayEmbed(
-                        current,
-                        participants.length
-                    ),
-                ],
-
-                components: [
-                    createParticipateRow(
-                        current.id,
-                        true
-                    ),
-                ],
-
-            });
-
-        } catch (error) {
-
-            console.error(
-                "⚠️ Failed to disable giveaway button:",
-                error
-            );
+            } catch {
+                // Expected when the interaction webhook has expired.
+            }
         }
 
     } finally {
@@ -1072,43 +1069,33 @@ async function runElimination(
         );
 
 
-        try {
+        const uiInteraction =
+            followUpInteraction ||
+            activeInteractions.get(current.id) ||
+            null;
 
-            const channel =
-                await client.channels.fetch(
-                    current.channelId
+        if (uiInteraction?.webhook && current.messageId) {
+            try {
+                await uiInteraction.webhook.editMessage(
+                    current.messageId,
+                    {
+                        embeds: [
+                            createGiveawayEmbed(
+                                current,
+                                remaining.length
+                            ),
+                        ],
+                        components: [
+                            createParticipateRow(
+                                current.id,
+                                true
+                            ),
+                        ],
+                    }
                 );
-
-            const message =
-                await channel.messages.fetch(
-                    current.messageId
-                );
-
-            await message.edit({
-
-                embeds: [
-                    createGiveawayEmbed(
-                        current,
-                        remaining.length
-                    ),
-                ],
-
-                components: [
-                    createParticipateRow(
-                        current.id,
-                        true
-                    ),
-                ],
-            });
-
-        }
-
-        catch (error) {
-
-            console.error(
-                "⚠️ Giveaway elimination message update failed:",
-                error
-            );
+            } catch {
+                // Expected when the interaction webhook has expired.
+            }
         }
 
 
@@ -1165,40 +1152,28 @@ async function finishWithoutWinner(
     activeInteractions.delete(giveawayId);
 
 
-    try {
+    const uiInteraction =
+        activeInteractions.get(giveawayId) ||
+        null;
 
-        const channel =
-            await client.channels.fetch(
-                giveaway.channelId
+    if (uiInteraction?.webhook && giveaway.messageId) {
+        try {
+            await uiInteraction.webhook.editMessage(
+                giveaway.messageId,
+                {
+                    content: null,
+                    embeds: [
+                        createGiveawayEmbed(
+                            giveaway,
+                            0
+                        ),
+                    ],
+                    components: [],
+                }
             );
-
-        const message =
-            await channel.messages.fetch(
-                giveaway.messageId
-            );
-
-        await message.edit({
-
-            content: null,
-
-            embeds: [
-                createGiveawayEmbed(
-                    giveaway,
-                    0
-                ),
-            ],
-
-            components: [],
-        });
-
-    }
-
-    catch (error) {
-
-        console.error(
-            "❌ Failed to finish empty giveaway:",
-            error
-        );
+        } catch {
+            // Expected when the interaction webhook has expired.
+        }
     }
 }
 
@@ -1227,71 +1202,44 @@ async function showWinner(
                 inline: true,
             });
 
-    // Prefer a real interaction follow-up when the original interaction
-    // is still available. This is what /giveaway end uses.
-    if (followUpInteraction) {
+    // User-level architecture:
+    // Announce only through the interaction webhook. Never fall back to
+    // channel APIs.
+    const uiInteraction =
+        followUpInteraction ||
+        activeInteractions.get(giveaway.id) ||
+        null;
+
+    if (uiInteraction?.webhook) {
         try {
-            await followUpInteraction.followUp({
+            await uiInteraction.followUp({
                 content: `<@${giveaway.winnerId}>`,
                 embeds: [embed],
                 ephemeral: false,
             });
-        } catch (error) {
-            console.error(
-                "⚠️ Giveaway follow-up failed; using persistent channel message:",
-                error
-            );
+        } catch {
+            // Expected when the interaction webhook has expired.
         }
-    }
 
-    // Automatic expiry and post-restart endings do not have a usable
-    // original interaction, so they must create a new channel message.
-    try {
-        const channel =
-            await client.channels.fetch(
-                giveaway.channelId
-            );
-
-        await channel.send({
-            content: `<@${giveaway.winnerId}>`,
-            embeds: [embed],
-        });
-
-    } catch (error) {
-        console.error(
-            "❌ Failed to send giveaway winner announcement:",
-            error
-        );
-    }
-
-    // Remove the winner/mention from the old giveaway message and leave
-    // the final giveaway state visible there.
-    try {
-        const channel =
-            await client.channels.fetch(
-                giveaway.channelId
-            );
-
-        const message =
-            await channel.messages.fetch(
-                giveaway.messageId
-            );
-
-        await message.edit({
-            content: null,
-            embeds: [
-                createGiveawayEmbed(
-                    giveaway,
-                    giveaway.participantCountAtEnd
-                ),
-            ],
-            components: [],
-        });
-    } catch (error) {
-        console.error(
-            "⚠️ Failed to finalize original giveaway message:",
-            error
-        );
+        if (giveaway.messageId) {
+            try {
+                await uiInteraction.webhook.editMessage(
+                    giveaway.messageId,
+                    {
+                        content: null,
+                        embeds: [
+                            createGiveawayEmbed(
+                                giveaway,
+                                giveaway.participantCountAtEnd
+                            ),
+                        ],
+                        components: [],
+                    }
+                );
+            } catch {
+                // Expected when the interaction webhook has expired.
+            }
+        }
     }
 }
 
