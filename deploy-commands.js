@@ -17,10 +17,15 @@ const {
     statsCommand,
 } = require("./src/services/stats");
 
+const {
+    giveawayCommand,
+} = require("./src/services/giveaway/giveaway");
+
 const commands = [
     triviaCommand.toJSON(),
     cooldownCommand.toJSON(),
     statsCommand.toJSON(),
+    giveawayCommand.toJSON(),
 ];
 
 const rest =

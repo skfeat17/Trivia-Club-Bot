@@ -41,7 +41,11 @@ const {
 const {
     log,
 } = require("./utils/logger");
-
+const {
+    handleGiveawayCommand,
+    handleGiveawayButton,
+    restoreGiveaway,
+} = require("./services/giveaway/giveaway");
 const client =
     new Client({
         intents: [
@@ -117,7 +121,7 @@ client.once(
         log(
             `Logged in as ${readyClient.user.tag}`
         );
-
+        await restoreGiveaway(client);
         /*
         Start background generation without blocking Discord login.
         If Redis already contains questions, this returns immediately.
@@ -150,6 +154,13 @@ client.on(
             if (
                 interaction.isChatInputCommand()
             ) {
+
+
+                if (interaction.commandName === "giveaway") {
+                    await handleGiveawayCommand(interaction);
+                    return;
+                }
+
                 if (
                     interaction.commandName ===
                     "trivia"
@@ -195,6 +206,15 @@ client.on(
             if (
                 !interaction.isButton()
             ) {
+                return;
+            }
+
+            if (
+                interaction.customId.startsWith(
+                    "pierro:giveaway:participate:"
+                )
+            ) {
+                await handleGiveawayButton(interaction);
                 return;
             }
 

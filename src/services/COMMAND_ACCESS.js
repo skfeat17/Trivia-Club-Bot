@@ -5,8 +5,7 @@ require("dotenv").config();
 | PIERRO COMMAND ACCESS
 |--------------------------------------------------------------------------
 |
-| Same concept as WAC-QuizBot's COMMAND_ACCESS:
-| command management is controlled by explicit Discord user IDs.
+| Command management is controlled by explicit Discord user IDs.
 |
 |--------------------------------------------------------------------------
 */
@@ -18,28 +17,87 @@ function parseUserIds(value) {
         .filter(Boolean);
 }
 
+
+// ============================================================
+// COMMAND ACCESS
+// ============================================================
+
 const COMMAND_ACCESS = {
-    trivia: parseUserIds(process.env.STAFF_USER_IDS),
-    cooldown: parseUserIds(process.env.STAFF_USER_IDS),
-    stats: parseUserIds(process.env.STAFF_USER_IDS),
+
+    trivia:
+        parseUserIds(
+            process.env.STAFF_USER_IDS
+        ),
+
+    cooldown:
+        parseUserIds(
+            process.env.STAFF_USER_IDS
+        ),
+
+    stats:
+        parseUserIds(
+            process.env.STAFF_USER_IDS
+        ),
+
+    giveaway:
+        parseUserIds(
+            process.env.STAFF_USER_IDS
+        ),
 };
 
-const PAYMENT_STAFF = parseUserIds(
-    process.env.PAYMENT_STAFF_USER_IDS
-);
 
-function hasCommandAccess(command, userId) {
-    const allowed = COMMAND_ACCESS[command] || [];
-    return allowed.includes(String(userId));
+// ============================================================
+// PAYMENT STAFF
+// ============================================================
+
+const PAYMENT_STAFF =
+    parseUserIds(
+        process.env.PAYMENT_STAFF_USER_IDS
+    );
+
+
+// ============================================================
+// COMMAND PERMISSION
+// ============================================================
+
+function hasCommandAccess(
+    command,
+    userId
+) {
+
+    const allowed =
+        COMMAND_ACCESS[command] || [];
+
+    return allowed.includes(
+        String(userId)
+    );
 }
 
-function hasPaymentAccess(userId) {
-    return PAYMENT_STAFF.includes(String(userId));
+
+// ============================================================
+// PAYMENT PERMISSION
+// ============================================================
+
+function hasPaymentAccess(
+    userId
+) {
+
+    return PAYMENT_STAFF.includes(
+        String(userId)
+    );
 }
+
+
+// ============================================================
+// EXPORTS
+// ============================================================
 
 module.exports = {
+
     COMMAND_ACCESS,
     PAYMENT_STAFF,
+
     hasCommandAccess,
     hasPaymentAccess,
+
 };
