@@ -156,13 +156,6 @@ function createGiveawayEmbed(
                 inline: true,
             });
 
-    if (giveaway.status === "ending") {
-        embed.addFields({
-            name: "🎲 Status",
-            value: "Eliminating participants...",
-        });
-    }
-
     if (giveaway.status === "completed") {
         if (giveaway.winnerId) {
             embed
@@ -345,19 +338,10 @@ async function startGiveaway(
             winnerId:
                 null,
 
-            remainingParticipants:
-                [],
-
-            eliminatedCount:
-                0,
-
             participantCountAtEnd:
                 0,
 
             endingReason:
-                null,
-
-            endingStartedAt:
                 null,
 
             finishedAt:
@@ -761,51 +745,18 @@ async function endGiveaway(
     followUpInteraction = null
 ) {
 
-    const giveaway =
-        await getGiveaway(
-            giveawayId
-        );
-
-    if (!giveaway) {
-        return;
-    }
-
-    // Already finished
-    if (
-        giveaway.status ===
-        "completed"
-    ) {
-        return;
-    }
-
-    // Already ending
-    if (
-        giveaway.status ===
-        "ending"
-    ) {
-
-        await runElimination(
-            client,
-            giveaway,
-            followUpInteraction
-        );
-
-        return;
-    }
-
     const locked =
         await acquireGiveawayLock();
 
     if (!locked) {
-
         console.log(
             "⚠️ Giveaway end lock busy."
         );
-
         return;
     }
 
-    let endingGiveaway = null;
+    let completedGiveaway = null;
+    let participants = [];
 
     try {
 
@@ -818,18 +769,13 @@ async function endGiveaway(
             return;
         }
 
-        if (
-            current.status ===
-            "completed"
-        ) {
+        // Another end operation may have already completed it.
+        if (current.status === "completed") {
             return;
         }
 
-        // --------------------------------------------------------
-        // GET PARTICIPANTS DIRECTLY FROM REDIS
-        // --------------------------------------------------------
-
-        const participants =
+        // Pull the complete participant list directly from Redis.
+        participants =
             await getParticipants(
                 giveawayId
             );
@@ -839,17 +785,31 @@ async function endGiveaway(
         );
 
         // --------------------------------------------------------
-        // SAVE CURRENT ENDING STATE
+        // SELECT WINNER DIRECTLY
+        // --------------------------------------------------------
+
+        let winnerId = null;
+
+        if (participants.length > 0) {
+            const winnerIndex =
+                crypto.randomInt(
+                    0,
+                    participants.length
+                );
+
+            winnerId =
+                participants[winnerIndex];
+        }
+
+        // --------------------------------------------------------
+        // COMPLETE STATE FIRST
         // --------------------------------------------------------
 
         current.status =
-            "ending";
+            "completed";
 
-        current.remainingParticipants =
-            [...participants];
-
-        current.eliminatedCount =
-            0;
+        current.winnerId =
+            winnerId;
 
         current.participantCountAtEnd =
             participants.length;
@@ -857,306 +817,79 @@ async function endGiveaway(
         current.endingReason =
             reason;
 
-        current.endingStartedAt =
+        current.finishedAt =
             Date.now();
 
+        // Redis is updated BEFORE any Discord announcement.
         await saveGiveaway(
             current
         );
 
-        // Keep the UPDATED object
-        endingGiveaway = current;
+        await clearActiveGiveawayId();
 
-        // --------------------------------------------------------
-        // DISABLE PARTICIPATE BUTTON
-        // --------------------------------------------------------
+        completedGiveaway = current;
 
-        // User-level architecture:
-        // Never fetch the channel or message through the Discord client.
-        // If the original interaction is still alive, edit the public
-        // follow-up through its interaction webhook. After restart/expiry,
-        // silently skip the UI update.
-        const uiInteraction =
-            followUpInteraction ||
-            activeInteractions.get(current.id) ||
-            null;
+        // Stop the in-memory timer.
+        const timer =
+            timers.get(current.id);
 
-        if (uiInteraction?.webhook && current.messageId) {
-            try {
-                await uiInteraction.webhook.editMessage(
-                    current.messageId,
-                    {
-                        embeds: [
-                            createGiveawayEmbed(
-                                current,
-                                participants.length
-                            ),
-                        ],
-                        components: [
-                            createParticipateRow(
-                                current.id,
-                                true
-                            ),
-                        ],
-                    }
-                );
-            } catch {
-                // Expected when the interaction webhook has expired.
-            }
+        if (timer) {
+            clearTimeout(timer);
+            timers.delete(current.id);
         }
 
     } finally {
 
         await releaseGiveawayLock();
-
     }
 
-    // ------------------------------------------------------------
-    // IMPORTANT:
-    // USE THE UPDATED ENDING STATE
-    // ------------------------------------------------------------
-
-    if (
-        !endingGiveaway
-    ) {
+    if (!completedGiveaway) {
         return;
     }
 
-    // No participants
-    if (
-        endingGiveaway
-            .remainingParticipants
-            .length === 0
-    ) {
+    // ------------------------------------------------------------
+    // DISCORD UI / ANNOUNCEMENT
+    // ------------------------------------------------------------
 
-        await finishWithoutWinner(
-            client,
-            giveawayId
-        );
-
-        return;
-    }
-
-    // Start elimination using the UPDATED state
-    await runElimination(
+    await showWinner(
         client,
-        endingGiveaway,
-        followUpInteraction
+        completedGiveaway,
+        followUpInteraction ||
+            activeInteractions.get(completedGiveaway.id) ||
+            null
+    );
+
+    activeInteractions.delete(
+        completedGiveaway.id
     );
 }
 
 
 // ============================================================
-// ELIMINATION
+// NO WINNER / COMPLETED MESSAGE
 // ============================================================
 
-async function runElimination(
+async function showWinner(
     client,
     giveaway,
     followUpInteraction = null
 ) {
 
-    while (true) {
+    const uiInteraction =
+        followUpInteraction ||
+        activeInteractions.get(giveaway.id) ||
+        null;
 
-        const current =
-            await getGiveaway(
-                giveaway.id
-            );
-
-        if (!current) {
-            return;
-        }
-
-
-        if (
-            current.status !==
-            "ending"
-        ) {
-            return;
-        }
-
-
-        const remaining =
-            current.remainingParticipants
-            || [];
-
-
-        // ----------------------------------------------------
-        // WINNER
-        // ----------------------------------------------------
-
-        if (
-            remaining.length === 1
-        ) {
-
-            const winnerId =
-                remaining[0];
-
-            current.winnerId =
-                winnerId;
-
-            current.status =
-                "completed";
-
-            current.finishedAt =
-                Date.now();
-
-            current.remainingParticipants =
-                [winnerId];
-
-
-            await saveGiveaway(
-                current
-            );
-
-            await clearActiveGiveawayId();
-
-
-            const timer =
-                timers.get(
-                    current.id
-                );
-
-            if (timer) {
-                clearTimeout(timer);
-                timers.delete(
-                    current.id
-                );
-            }
-
-
-            await showWinner(
-                client,
-                current,
-                followUpInteraction || activeInteractions.get(current.id) || null
-            );
-
-            activeInteractions.delete(current.id);
-
-            return;
-        }
-
-
-        // ----------------------------------------------------
-        // ELIMINATE ONE
-        // ----------------------------------------------------
-
-        const index =
-            crypto.randomInt(
-                0,
-                remaining.length
-            );
-
-        const eliminated =
-            remaining.splice(
-                index,
-                1
-            )[0];
-
-
-        current.remainingParticipants =
-            remaining;
-
-        current.eliminatedCount =
-            Number(
-                current.eliminatedCount || 0
-            ) + 1;
-
-
-        // SAVE BEFORE DISCORD UPDATE
-        await saveGiveaway(
-            current
-        );
-
-
-        const uiInteraction =
-            followUpInteraction ||
-            activeInteractions.get(current.id) ||
-            null;
-
-        if (uiInteraction?.webhook && current.messageId) {
-            try {
-                await uiInteraction.webhook.editMessage(
-                    current.messageId,
-                    {
-                        embeds: [
-                            createGiveawayEmbed(
-                                current,
-                                remaining.length
-                            ),
-                        ],
-                        components: [
-                            createParticipateRow(
-                                current.id,
-                                true
-                            ),
-                        ],
-                    }
-                );
-            } catch {
-                // Expected when the interaction webhook has expired.
-            }
-        }
-
-
-        console.log(
-            `🎲 GIVEAWAY ELIMINATED | ${eliminated}`
-        );
-
-
-        await new Promise(
-            resolve =>
-                setTimeout(
-                    resolve,
-                    1200
-                )
-        );
-    }
-}
-
-
-// ============================================================
-// NO WINNER
-// ============================================================
-
-async function finishWithoutWinner(
-    client,
-    giveawayId
-) {
-
-    const giveaway =
-        await getGiveaway(
-            giveawayId
-        );
-
-    if (!giveaway) {
+    if (!uiInteraction?.webhook) {
         return;
     }
 
+    // --------------------------------------------------------
+    // NO PARTICIPANTS
+    // --------------------------------------------------------
 
-    giveaway.status =
-        "completed";
+    if (!giveaway.winnerId) {
 
-    giveaway.winnerId =
-        null;
-
-    giveaway.finishedAt =
-        Date.now();
-
-
-    await saveGiveaway(
-        giveaway
-    );
-
-    await clearActiveGiveawayId();
-    activeInteractions.delete(giveawayId);
-
-
-    const uiInteraction =
-        activeInteractions.get(giveawayId) ||
-        null;
-
-    if (uiInteraction?.webhook && giveaway.messageId) {
         try {
             await uiInteraction.webhook.editMessage(
                 giveaway.messageId,
@@ -1165,28 +898,18 @@ async function finishWithoutWinner(
                     embeds: [
                         createGiveawayEmbed(
                             giveaway,
-                            0
+                            giveaway.participantCountAtEnd
                         ),
                     ],
                     components: [],
                 }
             );
         } catch {
-            // Expected when the interaction webhook has expired.
+            // Expected if the interaction webhook has expired.
         }
+
+        return;
     }
-}
-
-
-// ============================================================
-// WINNER MESSAGE
-// ============================================================
-
-async function showWinner(
-    client,
-    giveaway,
-    followUpInteraction = null
-) {
 
     const embed =
         new EmbedBuilder()
@@ -1198,50 +921,45 @@ async function showWinner(
             )
             .addFields({
                 name: "👥 Participants",
-                value: String(giveaway.participantCountAtEnd),
+                value: String(
+                    giveaway.participantCountAtEnd
+                ),
                 inline: true,
             });
 
-    // User-level architecture:
-    // Announce only through the interaction webhook. Never fall back to
-    // channel APIs.
-    const uiInteraction =
-        followUpInteraction ||
-        activeInteractions.get(giveaway.id) ||
-        null;
+    // Announce through the interaction webhook only.
+    try {
+        await uiInteraction.followUp({
+            content: `<@${giveaway.winnerId}>`,
+            embeds: [embed],
+            ephemeral: false,
+        });
+    } catch {
+        // Expected if the interaction webhook has expired.
+    }
 
-    if (uiInteraction?.webhook) {
+    // Replace the original giveaway message with the completed state.
+    if (giveaway.messageId) {
         try {
-            await uiInteraction.followUp({
-                content: `<@${giveaway.winnerId}>`,
-                embeds: [embed],
-                ephemeral: false,
-            });
+            await uiInteraction.webhook.editMessage(
+                giveaway.messageId,
+                {
+                    content: null,
+                    embeds: [
+                        createGiveawayEmbed(
+                            giveaway,
+                            giveaway.participantCountAtEnd
+                        ),
+                    ],
+                    components: [],
+                }
+            );
         } catch {
-            // Expected when the interaction webhook has expired.
-        }
-
-        if (giveaway.messageId) {
-            try {
-                await uiInteraction.webhook.editMessage(
-                    giveaway.messageId,
-                    {
-                        content: null,
-                        embeds: [
-                            createGiveawayEmbed(
-                                giveaway,
-                                giveaway.participantCountAtEnd
-                            ),
-                        ],
-                        components: [],
-                    }
-                );
-            } catch {
-                // Expected when the interaction webhook has expired.
-            }
+            // Expected if the interaction webhook has expired.
         }
     }
 }
+
 
 // ============================================================
 // COMMAND HANDLER
@@ -1322,7 +1040,7 @@ async function handleGiveawayCommand(
 
 
         await interaction.editReply(
-            "🛑 Giveaway ending process started."
+            "🏆 Giveaway ended successfully."
         );
 
         return;
@@ -1372,20 +1090,6 @@ async function restoreGiveaway(
         ) {
 
             await clearActiveGiveawayId();
-
-            return;
-        }
-
-
-        if (
-            giveaway.status ===
-            "ending"
-        ) {
-
-            await runElimination(
-                client,
-                giveaway
-            );
 
             return;
         }
@@ -1454,7 +1158,7 @@ const giveawayCommand =
                 .setDescription(
                     "Giveaway name."
                 )
-                .setRequired(false)
+                .setRequired(true)
         )
         .addStringOption(option =>
             option
@@ -1462,7 +1166,7 @@ const giveawayCommand =
                 .setDescription(
                     "Giveaway description."
                 )
-                .setRequired(false)
+                .setRequired(true)
         )
         .addStringOption(option =>
             option
@@ -1470,7 +1174,7 @@ const giveawayCommand =
                 .setDescription(
                     "Examples: 30s, 10m, 2h, 1d."
                 )
-                .setRequired(false)
+                .setRequired(true)
         );
 module.exports = {
     giveawayCommand,
