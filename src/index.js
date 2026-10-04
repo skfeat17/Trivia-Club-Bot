@@ -19,7 +19,10 @@ const {
     cooldownCommand,
     handleCooldownCommand,
 } = require("./services/cooldown");
-
+const {
+    handleDropCommand,
+    handleDropButton,
+} = require("./services/drop/dropEvent");
 const {
     statsCommand,
     handleStatsCommand,
@@ -155,7 +158,10 @@ client.on(
                 interaction.isChatInputCommand()
             ) {
 
-
+                if (interaction.commandName === "drop") {
+                    await handleDropCommand(interaction);
+                    return;
+                }
                 if (interaction.commandName === "giveaway") {
                     await handleGiveawayCommand(interaction);
                     return;
@@ -208,7 +214,14 @@ client.on(
             ) {
                 return;
             }
-
+            if (
+                interaction.customId.startsWith(
+                    "pierro:drop:claim:"
+                )
+            ) {
+                await handleDropButton(interaction);
+                return;
+            }
             if (
                 interaction.customId.startsWith(
                     "pierro:giveaway:participate:"

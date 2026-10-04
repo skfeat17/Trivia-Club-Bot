@@ -20,12 +20,15 @@ const {
 const {
     giveawayCommand,
 } = require("./src/services/giveaway/giveaway");
-
+const {
+    dropCommand,
+} = require("./src/services/drop/dropEvent");
 const commands = [
     triviaCommand.toJSON(),
     cooldownCommand.toJSON(),
     statsCommand.toJSON(),
     giveawayCommand.toJSON(),
+    dropCommand.toJSON()
 ];
 
 const rest =
