@@ -124,10 +124,10 @@ async function handleTriviaStartButton(
         );
 
     if (!cooldownImmune) {
-        const remaining =
-            await getCooldown(
-                interaction.user.id
-            );
+        const remaining = await getCooldown(
+            "trivia",
+            interaction.user.id
+        );
 
         if (remaining > 0) {
             return interaction.editReply({
@@ -343,6 +343,7 @@ async function handleTriviaAnswer(
     if (!cooldownImmune) {
         try {
             await startCooldown(
+                "trivia",
                 interaction.user.id
             );
         } catch (error) {
@@ -358,23 +359,23 @@ async function handleTriviaAnswer(
     | CORRECT ANSWER
     |--------------------------------------------------------------------------
     */
-function generateReward() {
-    const roll = Math.random() * 100;
+    function generateReward() {
+        const roll = Math.random() * 100;
 
-    if (roll < 88) {
-        return Math.floor(Math.random() * 11) + 20; // 20–30 | 88%
+        if (roll < 88) {
+            return Math.floor(Math.random() * 11) + 20; // 20–30 | 88%
+        }
+
+        if (roll < 94) {
+            return Math.floor(Math.random() * 11) + 30; // 30–40 | 6%
+        }
+
+        if (roll < 98) {
+            return Math.floor(Math.random() * 6) + 40; // 40–45 | 4%
+        }
+
+        return Math.floor(Math.random() * 6) + 45; // 45–50 | 2%
     }
-
-    if (roll < 94) {
-        return Math.floor(Math.random() * 11) + 30; // 30–40 | 6%
-    }
-
-    if (roll < 98) {
-        return Math.floor(Math.random() * 6) + 40; // 40–45 | 4%
-    }
-
-    return Math.floor(Math.random() * 6) + 45; // 45–50 | 2%
-}
     if (correct) {
         const reward =
             generateReward();
