@@ -23,6 +23,9 @@ const DROP_TTL_SECONDS =
 const DROP_CLAIM_LOCK_SECONDS =
     30;
 
+const DROP_USER_COOLDOWN_SECONDS =
+    60 * 60;
+
 
 /* =========================================================
    KEY BUILDERS
@@ -34,6 +37,10 @@ function getDropKey(eventId) {
 
 function getDropClaimKey(eventId) {
     return `pierro:drop:claim:${eventId}`;
+}
+
+function getDropCooldownKey(userId) {
+    return `pierro:drop:cooldown:${userId}`;
 }
 
 
@@ -100,16 +107,61 @@ async function claimMysteryDrop(
 
 
 /* =========================================================
+   USER COOLDOWN
+========================================================= */
+
+async function getDropCooldown(userId) {
+
+    const ttl =
+        await redis.ttl(
+            getDropCooldownKey(userId)
+        );
+
+    if (
+        !Number.isFinite(ttl) ||
+        ttl <= 0
+    ) {
+        return 0;
+    }
+
+    return ttl;
+}
+
+
+async function startDropCooldown(userId) {
+
+    const result =
+        await redis.set(
+            getDropCooldownKey(userId),
+            {
+                startedAt: Date.now(),
+            },
+            {
+                nx: true,
+                ex: DROP_USER_COOLDOWN_SECONDS,
+            }
+        );
+
+    return result === "OK";
+}
+
+
+/* =========================================================
    EXPORTS
 ========================================================= */
 
 module.exports = {
 
     DROP_TTL_SECONDS,
+    DROP_CLAIM_LOCK_SECONDS,
+    DROP_USER_COOLDOWN_SECONDS,
 
     saveDrop,
     getDrop,
     deleteDrop,
 
     claimMysteryDrop,
+
+    getDropCooldown,
+    startDropCooldown,
 };

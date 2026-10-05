@@ -1,27 +1,92 @@
 const redis = require("./pierroRedis");
+
 const {
     recordCooldown,
 } = require("./statsService");
 
+
+/* =========================================================
+   COOLDOWN DURATIONS
+========================================================= */
+
 const COOLDOWN_SECONDS =
     24 * 60 * 60;
 
-const PREFIX =
-    "pierro:trivia:";
+const DROP_COOLDOWN_SECONDS =
+    60 * 60;
 
-function cooldownKey(userId) {
-    return `${PREFIX}cooldown:${userId}`;
+
+/* =========================================================
+   EVENT CONFIG
+========================================================= */
+
+const EVENT_CONFIG = {
+    trivia: {
+        prefix: "pierro:trivia:",
+        cooldownSeconds:
+            COOLDOWN_SECONDS,
+    },
+
+    drop: {
+        prefix: "pierro:drop:",
+        cooldownSeconds:
+            DROP_COOLDOWN_SECONDS,
+    },
+};
+
+
+/* =========================================================
+   HELPERS
+========================================================= */
+
+function getEventConfig(event) {
+
+    const config =
+        EVENT_CONFIG[event];
+
+    if (!config) {
+        throw new Error(
+            `Unsupported cooldown event: ${event}`
+        );
+    }
+
+    return config;
 }
 
-const INDEX_KEY =
-    `${PREFIX}cooldown:index`;
+
+function cooldownKey(
+    event,
+    userId
+) {
+    const config =
+        getEventConfig(event);
+
+    return `${config.prefix}cooldown:${userId}`;
+}
+
+
+function indexKey(event) {
+    const config =
+        getEventConfig(event);
+
+    return `${config.prefix}cooldown:index`;
+}
+
+
+/* =========================================================
+   GET COOLDOWN
+========================================================= */
 
 async function getCooldown(
+    event,
     userId
 ) {
     const ttl =
         await redis.ttl(
-            cooldownKey(userId)
+            cooldownKey(
+                event,
+                userId
+            )
         );
 
     return ttl > 0
@@ -29,26 +94,46 @@ async function getCooldown(
         : 0;
 }
 
+
+/* =========================================================
+   HAS COOLDOWN
+========================================================= */
+
 async function hasCooldown(
+    event,
     userId
 ) {
     return (
         await getCooldown(
+            event,
             userId
         )
     ) > 0;
 }
 
+
+/* =========================================================
+   START COOLDOWN
+========================================================= */
+
 async function startCooldown(
+    event,
     userId,
-    seconds = COOLDOWN_SECONDS
+    seconds
 ) {
+
+    const config =
+        getEventConfig(event);
+
     const duration =
         Math.max(
             1,
             Math.floor(
-                Number(seconds) ||
-                COOLDOWN_SECONDS
+                Number(
+                    seconds ??
+                    config.cooldownSeconds
+                ) ||
+                config.cooldownSeconds
             )
         );
 
@@ -57,9 +142,13 @@ async function startCooldown(
         duration * 1000;
 
     await redis.set(
-        cooldownKey(userId),
+        cooldownKey(
+            event,
+            userId
+        ),
         {
             userId,
+            event,
             createdAt:
                 Date.now(),
             expiresAt,
@@ -71,7 +160,7 @@ async function startCooldown(
     );
 
     await redis.zadd(
-        INDEX_KEY,
+        indexKey(event),
         {
             score:
                 expiresAt,
@@ -85,36 +174,55 @@ async function startCooldown(
     );
 
     console.log(
-        `⏳ TRIVIA COOLDOWN STARTED | User: ${userId} | Seconds: ${duration}`
+        `⏳ ${event.toUpperCase()} COOLDOWN STARTED | User: ${userId} | Seconds: ${duration}`
     );
 
     return expiresAt;
 }
 
+
+/* =========================================================
+   REMOVE COOLDOWN
+========================================================= */
+
 async function removeCooldown(
+    event,
     userId
 ) {
+
     await redis.del(
-        cooldownKey(userId)
+        cooldownKey(
+            event,
+            userId
+        )
     );
 
     await redis.zrem(
-        INDEX_KEY,
+        indexKey(event),
         String(userId)
     );
 }
 
+
+/* =========================================================
+   MODIFY COOLDOWN
+========================================================= */
+
 async function modifyCooldown(
+    event,
     userId,
-    seconds = COOLDOWN_SECONDS
+    seconds
 ) {
+
     const duration =
         Math.floor(
             Number(seconds) || 0
         );
 
     if (duration <= 0) {
+
         await removeCooldown(
+            event,
             userId
         );
 
@@ -126,9 +234,13 @@ async function modifyCooldown(
         duration * 1000;
 
     await redis.set(
-        cooldownKey(userId),
+        cooldownKey(
+            event,
+            userId
+        ),
         {
             userId,
+            event,
             createdAt:
                 Date.now(),
             expiresAt,
@@ -142,7 +254,7 @@ async function modifyCooldown(
     );
 
     await redis.zadd(
-        INDEX_KEY,
+        indexKey(event),
         {
             score:
                 expiresAt,
@@ -154,17 +266,35 @@ async function modifyCooldown(
     return expiresAt;
 }
 
-async function clearAllCooldowns() {
+
+/* =========================================================
+   CLEAR ALL COOLDOWNS FOR ONE EVENT
+========================================================= */
+
+async function clearAllCooldowns(
+    event
+) {
+
+    const config =
+        getEventConfig(event);
+
+    const prefix =
+        config.prefix;
+
+    const index =
+        indexKey(event);
+
     let cursor = 0;
     let deleted = 0;
 
     do {
+
         const result =
             await redis.scan(
                 cursor,
                 {
                     match:
-                        `${PREFIX}cooldown:*`,
+                        `${prefix}cooldown:*`,
                     count:
                         200,
                 }
@@ -176,13 +306,18 @@ async function clearAllCooldowns() {
         if (
             Array.isArray(result)
         ) {
+
             nextCursor =
                 result[0];
+
             found =
                 result[1] || [];
+
         } else {
+
             nextCursor =
                 result?.cursor ?? 0;
+
             found =
                 result?.keys || [];
         }
@@ -194,11 +329,13 @@ async function clearAllCooldowns() {
             Array.isArray(found) &&
             found.length
         ) {
+
             for (
                 let i = 0;
                 i < found.length;
                 i += 100
             ) {
+
                 const chunk =
                     found.slice(
                         i,
@@ -213,51 +350,74 @@ async function clearAllCooldowns() {
                     chunk.length;
             }
         }
+
     } while (
         cursor !== 0
     );
 
     await redis.del(
-        INDEX_KEY
+        index
     );
 
     console.log(
-        `🧹 TRIVIA COOLDOWNS CLEARED | Count: ${deleted}`
+        `🧹 ${event.toUpperCase()} COOLDOWNS CLEARED | Count: ${deleted}`
     );
 
     return deleted;
 }
 
-async function countActiveCooldowns() {
+
+/* =========================================================
+   COUNT ACTIVE COOLDOWNS
+========================================================= */
+
+async function countActiveCooldowns(
+    event
+) {
+
     const now =
         Date.now();
 
+    const index =
+        indexKey(event);
+
     await redis.zremrangebyscore(
-        INDEX_KEY,
+        index,
         0,
         now
     );
 
     return Number(
         await redis.zcard(
-            INDEX_KEY
+            index
         )
     );
 }
 
-async function listActiveCooldowns() {
+
+/* =========================================================
+   LIST ACTIVE COOLDOWNS
+========================================================= */
+
+async function listActiveCooldowns(
+    event
+) {
+
     const now =
         Date.now();
 
+    const index =
+        indexKey(event);
+
     await redis.zremrangebyscore(
-        INDEX_KEY,
+        index,
         0,
         now
     );
 
     const entries =
         await redis.zrange(
-            INDEX_KEY,
+            index,
             0,
             -1,
             {
@@ -279,6 +439,7 @@ async function listActiveCooldowns() {
         i < entries.length;
         i++
     ) {
+
         const item =
             entries[i];
 
@@ -286,14 +447,17 @@ async function listActiveCooldowns() {
             typeof item ===
             "object"
         ) {
+
             output.push({
                 userId:
                     item.member,
+
                 expiresAt:
                     Number(
                         item.score
                     ),
             });
+
             continue;
         }
 
@@ -301,9 +465,11 @@ async function listActiveCooldowns() {
             i + 1 <
             entries.length
         ) {
+
             output.push({
                 userId:
                     item,
+
                 expiresAt:
                     Number(
                         entries[++i]
@@ -315,6 +481,7 @@ async function listActiveCooldowns() {
     return output
         .map(entry => ({
             ...entry,
+
             ttl:
                 Math.max(
                     0,
@@ -336,14 +503,25 @@ async function listActiveCooldowns() {
         );
 }
 
+
+/* =========================================================
+   EXPORTS
+========================================================= */
+
 module.exports = {
+
     COOLDOWN_SECONDS,
+    DROP_COOLDOWN_SECONDS,
+
     getCooldown,
     hasCooldown,
+
     startCooldown,
     removeCooldown,
     modifyCooldown,
+
     clearAllCooldowns,
+
     countActiveCooldowns,
     listActiveCooldowns,
 };

@@ -23,6 +23,8 @@ const {
     getDrop,
     deleteDrop,
     claimMysteryDrop,
+    getDropCooldown,
+    startDropCooldown,
 } = require("./dropRedis");
 
 const {
@@ -311,6 +313,59 @@ async function handleDropButton(interaction) {
 
     const userId =
         interaction.user.id;
+
+
+    /* -----------------------------------------
+       STAFF ARE IMMUNE TO COOLDOWN
+    ----------------------------------------- */
+
+    const isStaff = 
+        hasCommandAccess(
+            "drop",
+            userId
+        );
+
+
+    /* -----------------------------------------
+       USER COOLDOWN
+    ----------------------------------------- */
+
+    if (!isStaff) {
+
+        const cooldown =
+            await getDropCooldown(userId);
+
+        if (cooldown > 0) {
+
+            const hours =
+                Math.floor(cooldown / 3600);
+
+            const minutes =
+                Math.floor(
+                    (cooldown % 3600) / 60
+                );
+
+            const seconds =
+                cooldown % 60;
+
+            const time =
+                hours > 0
+                    ? `${hours}h ${minutes}m`
+                    : minutes > 0
+                        ? `${minutes}m ${seconds}s`
+                        : `${seconds}s`;
+
+            await interaction.editReply({
+                content:
+                    `⏳ You are on cooldown!\n\n` +
+                    `You can open another Mystery Drop in **${time}**.`,
+            });
+
+            return;
+        }
+
+        await startDropCooldown(userId);
+    }
 
 
     /* -----------------------------------------
