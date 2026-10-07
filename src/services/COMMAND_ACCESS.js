@@ -44,6 +44,7 @@ const COMMAND_ACCESS = {
             process.env.STAFF_USER_IDS
         ),
     drop: parseUserIds(process.env.STAFF_USER_IDS),
+    domain: parseUserIds(process.env.STAFF_USER_IDS),
 };
 
 

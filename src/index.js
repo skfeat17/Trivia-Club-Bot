@@ -9,7 +9,10 @@ const {
     GatewayIntentBits,
     MessageFlags,
 } = require("discord.js");
-
+const {
+    handleDomainCommand,
+    handleDomainJoinButton,
+} = require("./services/domain/domain");
 const {
     triviaCommand,
     handleTriviaCommand,
@@ -157,7 +160,10 @@ client.on(
             if (
                 interaction.isChatInputCommand()
             ) {
-
+                if (interaction.commandName === "domain") {
+                    await handleDomainCommand(interaction);
+                    return;
+                }
                 if (interaction.commandName === "drop") {
                     await handleDropCommand(interaction);
                     return;
@@ -212,6 +218,14 @@ client.on(
             if (
                 !interaction.isButton()
             ) {
+                return;
+            }
+            if (
+                interaction.customId.startsWith(
+                    "pierro:domain:join:"
+                )
+            ) {
+                await handleDomainJoinButton(interaction);
                 return;
             }
             if (

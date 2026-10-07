@@ -23,12 +23,16 @@ const {
 const {
     dropCommand,
 } = require("./src/services/drop/dropEvent");
+const {
+    domainCommand,
+} = require("./src/services/domain/domain");
 const commands = [
     triviaCommand.toJSON(),
     cooldownCommand.toJSON(),
     statsCommand.toJSON(),
     giveawayCommand.toJSON(),
-    dropCommand.toJSON()
+    dropCommand.toJSON(),
+    domainCommand.toJSON()
 ];
 
 const rest =
