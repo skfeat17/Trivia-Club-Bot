@@ -1526,10 +1526,6 @@ module.exports = {
                         {
                             name: "Destroy",
                             value: "destroy",
-                        },
-                        {
-                            name: "Developer Test Party",
-                            value: "testparty",
                         }
                     )
             )
