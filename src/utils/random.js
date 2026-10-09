@@ -21,8 +21,8 @@ function randomInt(
 }
 
 function generateReward(
-    min = 10,
-    max = 100
+    min = 20,
+    max = 50
 ) {
     return randomInt(
         min,
