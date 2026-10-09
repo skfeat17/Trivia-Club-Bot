@@ -82,123 +82,114 @@ function isCooldownImmune(userId) {
 async function handleTriviaStartButton(
     interaction
 ) {
-    /*
-    |--------------------------------------------------------------------------
-    | ACKNOWLEDGE IMMEDIATELY
-    |--------------------------------------------------------------------------
-    |
-    | Gemini generation can take several seconds.
-    | Defer before doing Redis/Gemini work.
-    |
-    |--------------------------------------------------------------------------
-    */
-
     await interaction.deferReply({
         flags: MessageFlags.Ephemeral,
     });
 
-    const active =
-        await getActiveTrivia();
+    try {
+        const active =
+            await getActiveTrivia();
 
-    if (!active) {
-        return interaction.editReply({
-            content:
-                "🔮 Permanent Trivia is currently offline.",
-        });
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | CHECK COOLDOWN
-    |--------------------------------------------------------------------------
-    |
-    | STAFF_USER_IDS are immune to cooldown.
-    |
-    |--------------------------------------------------------------------------
-    */
-
-    const cooldownImmune =
-        isCooldownImmune(
-            interaction.user.id
-        );
-
-    if (!cooldownImmune) {
-        const remaining = await getCooldown(
-            "trivia",
-            interaction.user.id
-        );
-
-        if (remaining > 0) {
+        if (!active) {
             return interaction.editReply({
                 content:
-                    `⏳ You are on cooldown. You can answer trivia again in **${formatCooldown(remaining)}**.`,
+                    "🔮 Permanent Trivia is currently offline.",
             });
         }
-    }
 
 
-    /*
-    |--------------------------------------------------------------------------
-    | GET QUESTION
-    |--------------------------------------------------------------------------
-    |
-    | There is intentionally NO active-attempt restriction.
-    |
-    | Users can request as many questions as they want.
-    |
-    |--------------------------------------------------------------------------
-    */
+        /*
+        |--------------------------------------------------------------------------
+        | CHECK COOLDOWN
+        |--------------------------------------------------------------------------
+        */
 
-    let question;
+        const cooldownImmune =
+            isCooldownImmune(
+                interaction.user.id
+            );
 
-    try {
-        question =
-            await getQuestion();
+        if (!cooldownImmune) {
+            const remaining =
+                await getCooldown(
+                    "trivia",
+                    interaction.user.id
+                );
+
+            if (remaining > 0) {
+                return interaction.editReply({
+                    content:
+                        `⏳ You are on cooldown. You can answer trivia again in **${formatCooldown(remaining)}**.`,
+                });
+            }
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | GET QUESTION
+        |--------------------------------------------------------------------------
+        */
+
+        let question;
+
+        try {
+            question =
+                await getQuestion();
+        } catch (error) {
+            console.error(
+                `❌ TRIVIA QUESTION FAILED | ${error.message}`
+            );
+
+            return interaction.editReply({
+                content:
+                    "⚠️ I couldn't get a trivia question right now. Please try again in a moment.",
+            });
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | SAVE CURRENT ATTEMPT
+        |--------------------------------------------------------------------------
+        |
+        | Requesting a question does not start cooldown.
+        | Only the latest question can be answered.
+        |
+        |--------------------------------------------------------------------------
+        */
+
+        await saveAttempt(
+            interaction.user.id,
+            question
+        );
+
+        console.log(
+            `🎲 TRIVIA QUESTION SENT | User: ${interaction.user.id} | Game: ${question.game} | Question: ${question.id}`
+        );
+
+        return interaction.editReply({
+            embeds: [
+                questionEmbed(question),
+            ],
+            components: [
+                answerRow(question),
+            ],
+        });
+
     } catch (error) {
         console.error(
-            `❌ TRIVIA QUESTION FAILED | ${error.message}`
+            "❌ TRIVIA START BUTTON ERROR:",
+            error
         );
 
         return interaction.editReply({
             content:
-                "⚠️ I couldn't get a trivia question right now. Please try again in a moment.",
+                "❌ Something went wrong while getting your trivia question. Please try again.",
+            embeds: [],
+            components: [],
         });
     }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | REPLACE PREVIOUS QUESTION
-    |--------------------------------------------------------------------------
-    |
-    | Only this latest question can be answered.
-    |
-    |--------------------------------------------------------------------------
-    */
-
-    await saveAttempt(
-        interaction.user.id,
-        question
-    );
-
-    console.log(
-        `🎲 TRIVIA QUESTION SENT | User: ${interaction.user.id} | Game: ${question.game} | Question: ${question.id}`
-    );
-
-
-    return interaction.editReply({
-        embeds: [
-            questionEmbed(
-                question
-            ),
-        ],
-        components: [
-            answerRow(
-                question
-            ),
-        ],
-    });
 }
 
 
@@ -207,12 +198,17 @@ async function handleTriviaStartButton(
 | ANSWER TRIVIA
 |--------------------------------------------------------------------------
 |
-| A user can answer exactly ONE question.
+| CORRECT ANSWER:
+| - Starts the 24-hour cooldown for regular users
+| - Generates a Mora reward
+| - Records the reward statistics
+| - Creates a payment transaction
 |
-| consumeAttempt() removes the attempt atomically, preventing:
-| - double clicks
-| - multiple simultaneous answers
-| - multiple rewards
+| INCORRECT ANSWER:
+| - Does NOT start cooldown
+| - Does NOT generate a reward
+| - Restores the same question
+| - Allows the user to try again
 |
 |--------------------------------------------------------------------------
 */
@@ -223,9 +219,7 @@ async function handleTriviaAnswer(
     const parts =
         interaction.customId.split(":");
 
-    if (
-        parts.length !== 4
-    ) {
+    if (parts.length !== 4) {
         return;
     }
 
@@ -236,10 +230,14 @@ async function handleTriviaAnswer(
         Number(parts[3]);
 
 
+    /*
+    |--------------------------------------------------------------------------
+    | VALIDATE ANSWER
+    |--------------------------------------------------------------------------
+    */
+
     if (
-        !Number.isInteger(
-            selectedIndex
-        ) ||
+        !Number.isInteger(selectedIndex) ||
         selectedIndex < 0 ||
         selectedIndex > 3
     ) {
@@ -257,15 +255,31 @@ async function handleTriviaAnswer(
     | CONSUME CURRENT QUESTION
     |--------------------------------------------------------------------------
     |
-    | Only ONE request can successfully consume it.
+    | The attempt is consumed atomically to prevent
+    | multiple simultaneous answers and duplicate rewards.
     |
     |--------------------------------------------------------------------------
     */
 
-    const attempt =
-        await consumeAttempt(
-            interaction.user.id
+    let attempt;
+
+    try {
+        attempt =
+            await consumeAttempt(
+                interaction.user.id
+            );
+    } catch (error) {
+        console.error(
+            `❌ TRIVIA ATTEMPT CONSUMPTION FAILED | ${error.message}`
         );
+
+        return interaction.reply({
+            content:
+                "⚠️ Something went wrong checking your answer. Please try again.",
+            flags:
+                MessageFlags.Ephemeral,
+        });
+    }
 
 
     if (!attempt) {
@@ -280,14 +294,20 @@ async function handleTriviaAnswer(
 
     /*
     |--------------------------------------------------------------------------
-    | MAKE SURE THIS IS THE LATEST QUESTION
+    | VERIFY QUESTION ID
     |--------------------------------------------------------------------------
     */
 
     if (
-        attempt.questionId !==
-        questionId
+        attempt.questionId !== questionId
     ) {
+        // Restore the current attempt because this click
+        // belongs to an older question.
+        await saveAttempt(
+            interaction.user.id,
+            attempt.question
+        );
+
         return interaction.reply({
             content:
                 "⚠️ This question has expired because you requested a newer trivia question.",
@@ -301,8 +321,7 @@ async function handleTriviaAnswer(
         attempt.question;
 
     const correct =
-        selectedIndex ===
-        question.correctAnswer;
+        selectedIndex === question.correctAnswer;
 
 
     /*
@@ -327,11 +346,67 @@ async function handleTriviaAnswer(
 
     /*
     |--------------------------------------------------------------------------
-    | START 24H COOLDOWN
+    | INCORRECT ANSWER
     |--------------------------------------------------------------------------
     |
-    | STAFF_USER_IDS DO NOT RECEIVE COOLDOWN.
+    | IMPORTANT:
+    | No cooldown is started.
+    | No Mora reward is generated.
+    | The same question is restored so the user can retry.
     |
+    |--------------------------------------------------------------------------
+    */
+
+    if (!correct) {
+        try {
+            await saveAttempt(
+                interaction.user.id,
+                question
+            );
+        } catch (error) {
+            console.error(
+                `❌ FAILED TO RESTORE TRIVIA ATTEMPT | ${error.message}`
+            );
+
+            return interaction.reply({
+                content:
+                    "⚠️ I couldn't restore your question. Please request a new one.",
+                flags:
+                    MessageFlags.Ephemeral,
+            });
+        }
+
+
+        await interaction.update({
+            content:
+                "❌ Incorrect answer! Try again!",
+
+            embeds: [
+                resultEmbed(
+                    question,
+                    {
+                        correct: false,
+                    }
+                ),
+            ],
+
+            components: [
+                answerRow(question),
+            ],
+        });
+
+
+        console.log(
+            `❌ TRIVIA INCORRECT | User: ${interaction.user.id} | Cooldown: NOT STARTED`
+        );
+
+        return;
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | CORRECT ANSWER
     |--------------------------------------------------------------------------
     */
 
@@ -339,6 +414,18 @@ async function handleTriviaAnswer(
         isCooldownImmune(
             interaction.user.id
         );
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | START 24-HOUR COOLDOWN
+    |--------------------------------------------------------------------------
+    |
+    | Only a correct answer starts the cooldown.
+    | Staff members remain cooldown-immune.
+    |
+    |--------------------------------------------------------------------------
+    */
 
     if (!cooldownImmune) {
         try {
@@ -356,129 +443,105 @@ async function handleTriviaAnswer(
 
     /*
     |--------------------------------------------------------------------------
-    | CORRECT ANSWER
+    | GENERATE REWARD
     |--------------------------------------------------------------------------
     */
-    function generateReward() {
-        const roll = Math.random() * 100;
 
-        if (roll < 88) {
-            return Math.floor(Math.random() * 11) + 20; // 20–30 | 88%
-        }
-
-        if (roll < 94) {
-            return Math.floor(Math.random() * 11) + 30; // 30–40 | 6%
-        }
-
-        if (roll < 98) {
-            return Math.floor(Math.random() * 6) + 40; // 40–45 | 4%
-        }
-
-        return Math.floor(Math.random() * 6) + 45; // 45–50 | 2%
-    }
-    if (correct) {
-        const reward =
-            generateReward();
+    const reward =
+        generateReward();
 
 
-        /*
-        | Record Mora statistics
-        */
+    /*
+    |--------------------------------------------------------------------------
+    | RECORD MORA STATISTICS
+    |--------------------------------------------------------------------------
+    */
 
-        try {
-            await recordMora(
-                interaction.user.id,
-                reward
-            );
-        } catch (error) {
-            console.error(
-                `❌ TRIVIA MORA STATS FAILED | ${error.message}`
-            );
-        }
-
-
-        /*
-        | Update user's trivia message
-        */
-
-        await interaction.update({
-            embeds: [
-                resultEmbed(
-                    question,
-                    {
-                        correct: true,
-                        reward,
-                    }
-                ),
-            ],
-            components: [],
-        });
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | CREATE PAYMENT REQUEST
-        |--------------------------------------------------------------------------
-        */
-
-        try {
-            await createPaymentTransaction({
-                client:
-                    interaction.client,
-
-                winnerId:
-                    interaction.user.id,
-
-                username:
-                    interaction.user.username,
-
-                game:
-                    question.game,
-
-                reward,
-
-                question:
-                    question.question,
-            });
-        } catch (error) {
-            console.error(
-                `❌ TRIVIA PAYMENT CREATION FAILED | ${error.message}`
-            );
-        }
-
-
-        console.log(
-            `🏆 TRIVIA CORRECT | User: ${interaction.user.id} | Reward: ${reward} Mora | Cooldown Immune: ${cooldownImmune}`
+    try {
+        await recordMora(
+            interaction.user.id,
+            reward
         );
-
-        return;
+    } catch (error) {
+        console.error(
+            `❌ TRIVIA MORA STATS FAILED | ${error.message}`
+        );
     }
 
 
     /*
     |--------------------------------------------------------------------------
-    | INCORRECT ANSWER
+    | UPDATE TRIVIA MESSAGE
     |--------------------------------------------------------------------------
     */
 
     await interaction.update({
+        content: "",
+
         embeds: [
             resultEmbed(
                 question,
                 {
-                    correct: false,
+                    correct: true,
+                    reward,
                 }
             ),
         ],
+
         components: [],
     });
 
 
+    /*
+    |--------------------------------------------------------------------------
+    | CREATE PAYMENT REQUEST
+    |--------------------------------------------------------------------------
+    */
+
+    try {
+        await createPaymentTransaction({
+            client:
+                interaction.client,
+
+            winnerId:
+                interaction.user.id,
+
+            username:
+                interaction.user.username,
+
+            game:
+                question.game,
+
+            reward,
+
+            question:
+                question.question,
+        });
+
+    } catch (error) {
+        console.error(
+            `❌ TRIVIA PAYMENT CREATION FAILED | ${error.message}`
+        );
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | LOG RESULT
+    |--------------------------------------------------------------------------
+    */
+
     console.log(
-        `❌ TRIVIA INCORRECT | User: ${interaction.user.id} | Cooldown Immune: ${cooldownImmune}`
+        `🏆 TRIVIA CORRECT | User: ${interaction.user.id} | Reward: ${reward} Mora | Cooldown Immune: ${cooldownImmune}`
     );
 }
 
+
+/*
+|--------------------------------------------------------------------------
+| EXPORTS
+|--------------------------------------------------------------------------
+*/
 
 module.exports = {
     handleTriviaStartButton,
