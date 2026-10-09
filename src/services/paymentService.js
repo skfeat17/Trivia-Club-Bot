@@ -17,84 +17,62 @@ const {
     hasPaymentAccess,
 } = require("./COMMAND_ACCESS");
 
-const MORA_EMOJI =
-    "<:mora:1503931162525962333>";
-
-const PAYMENT_CHANNEL_URL =
-    process.env.PAYMENT_CHANNEL_URL;
+const MORA_EMOJI = "<:mora:1503931162525962333>";
+const PAYMENT_CHANNEL_URL = process.env.PAYMENT_CHANNEL_URL;
 
 function createTransactionId() {
     return (
         `TX-${Date.now().toString(36).toUpperCase()}-` +
-        Math.random()
-            .toString(36)
-            .slice(2, 8)
-            .toUpperCase()
+        Math.random().toString(36).slice(2, 8).toUpperCase()
     );
 }
 
 function buildPaymentEmbed(transaction) {
-    const status =
-        transaction.status === "paid"
-            ? "✅ Paid"
-            : "❌ Unpaid";
+    const isPaid = transaction.status === "paid";
 
-    const embed =
-        new EmbedBuilder()
-            .setColor(
-                transaction.status === "paid"
-                    ? 0x57F287
-                    : 0xED4245
-            )
-            .setTitle(
-                transaction.status === "paid"
-                    ? "💰 TRANSACTION COMPLETED"
-                    : "💰 PENDING TRANSACTION"
-            )
-            .addFields(
-                {
-                    name: "Winner",
-                    value:
-                        `<@${transaction.winnerId}>`,
-                    inline: true,
-                },
-                {
-                    name: "Username",
-                    value:
-                        transaction.username,
-                    inline: true,
-                },
-                {
-                    name: "Game",
-                    value:
-                        transaction.game,
-                    inline: true,
-                },
-                {
-                    name: "Reward",
-                    value:
-                        `**${transaction.reward} Mora**`,
-                    inline: true,
-                },
-                {
-                    name: "Payment Status",
-                    value: status,
-                    inline: true,
-                }
-            )
-            .setFooter({
-                text:
-                    `Pierro • ${transaction.transactionId}`,
-            })
-            .setTimestamp(
-                transaction.createdAt
-            );
+    const embed = new EmbedBuilder()
+        .setColor(isPaid ? 0x57F287 : 0xED4245)
+        .setTitle(
+            isPaid
+                ? "💰 TRANSACTION COMPLETED"
+                : "💰 PENDING TRANSACTION"
+        )
+        .addFields(
+            {
+                name: "Winner",
+                value: `<@${transaction.winnerId}>`,
+                inline: true,
+            },
+            {
+                name: "Username",
+                value: transaction.username || "Unknown",
+                inline: true,
+            },
+            {
+                name: "Game",
+                value: transaction.game || "Unknown",
+                inline: true,
+            },
+            {
+                name: "Reward",
+                value: `**${transaction.reward} Mora**`,
+                inline: true,
+            },
+            {
+                name: "Payment Status",
+                value: isPaid ? "✅ Paid" : "❌ Unpaid",
+                inline: true,
+            }
+        )
+        .setFooter({
+            text: `Pierro • ${transaction.transactionId}`,
+        })
+        .setTimestamp(transaction.createdAt || Date.now());
 
     if (transaction.paidBy) {
         embed.addFields({
             name: "Paid By",
-            value:
-                `<@${transaction.paidBy}>`,
+            value: `<@${transaction.paidBy}>`,
             inline: true,
         });
     }
@@ -103,8 +81,7 @@ function buildPaymentEmbed(transaction) {
 }
 
 function buildPaymentButtons(transaction) {
-    const row =
-        new ActionRowBuilder();
+    const row = new ActionRowBuilder();
 
     if (PAYMENT_CHANNEL_URL) {
         row.addComponents(
@@ -112,9 +89,7 @@ function buildPaymentButtons(transaction) {
                 .setLabel("Pay User")
                 .setEmoji("💸")
                 .setStyle(ButtonStyle.Link)
-                .setURL(
-                    PAYMENT_CHANNEL_URL
-                )
+                .setURL(PAYMENT_CHANNEL_URL)
         );
     }
 
@@ -126,9 +101,7 @@ function buildPaymentButtons(transaction) {
             .setLabel("Mark Paid")
             .setEmoji("✅")
             .setStyle(ButtonStyle.Success)
-            .setDisabled(
-                transaction.status === "paid"
-            )
+            .setDisabled(transaction.status === "paid")
     );
 
     return [row];
@@ -150,197 +123,249 @@ async function createPaymentTransaction({
 
     if (!PAYMENT_STAFF.length) {
         console.warn(
-            "⚠️ PAYMENT_STAFF_USER_IDS is empty. Payment transaction will be stored but no DM will be sent."
+            "⚠️ PAYMENT_STAFF_USER_IDS is empty. " +
+            "Payment transaction will be stored but no DM will be sent."
         );
     }
 
     const transaction = {
-        transactionId:
-            createTransactionId(),
+        transactionId: createTransactionId(),
         winnerId,
-        username:
-            username || "Unknown",
-        game:
-            game || "Unknown",
-        reward:
-            Number(reward) || 0,
-        question:
-            question || "Unknown question",
-        status:
-            "unpaid",
-        paidBy:
-            null,
-        createdAt:
-            Date.now(),
-        updatedAt:
-            Date.now(),
+        username: username || "Unknown",
+        game: game || "Unknown",
+        reward: Number(reward) || 0,
+        question: question || "Unknown question",
+        status: "unpaid",
+        paidBy: null,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
         staffMessages: [],
     };
 
-    await savePaymentTransaction(
-        transaction
+    await savePaymentTransaction(transaction);
+
+    // Send staff DMs concurrently rather than one at a time.
+    const dmResults = await Promise.allSettled(
+        PAYMENT_STAFF.map(async (staffId) => {
+            const staff = await client.users.fetch(staffId);
+
+            const message = await staff.send({
+                embeds: [buildPaymentEmbed(transaction)],
+                components: buildPaymentButtons(transaction),
+            });
+
+            return {
+                staffId,
+                channelId: message.channelId,
+                messageId: message.id,
+            };
+        })
     );
 
-    for (const staffId of PAYMENT_STAFF) {
-        try {
-            const staff =
-                await client.users.fetch(
-                    staffId
-                );
+    for (let index = 0; index < dmResults.length; index++) {
+        const result = dmResults[index];
+        const staffId = PAYMENT_STAFF[index];
 
-            const message =
-                await staff.send({
-                    embeds: [
-                        buildPaymentEmbed(
-                            transaction
-                        ),
-                    ],
-                    components:
-                        buildPaymentButtons(
-                            transaction
-                        ),
-                });
-
-            transaction.staffMessages.push({
-                staffId,
-                channelId:
-                    message.channelId,
-                messageId:
-                    message.id,
-            });
-        } catch (error) {
+        if (result.status === "fulfilled") {
+            transaction.staffMessages.push(result.value);
+        } else {
             console.error(
-                `❌ PAYMENT DM FAILED | Staff: ${staffId} | ${error.message}`
+                `❌ PAYMENT DM FAILED | Staff: ${staffId} | ` +
+                `${result.reason?.message || result.reason}`
             );
         }
     }
 
-    await savePaymentTransaction(
-        transaction
-    );
+    await savePaymentTransaction(transaction);
 
     console.log(
-        `💳 PAYMENT CREATED | ${transaction.transactionId} | Winner: ${winnerId} | Reward: ${reward} Mora`
+        `💳 PAYMENT CREATED | ${transaction.transactionId} | ` +
+        `Winner: ${winnerId} | Reward: ${transaction.reward} Mora`
     );
 
     return transaction;
 }
 
+/**
+ * Edits the clicked message first, then updates other staff copies
+ * concurrently. The clicked message is not fetched again.
+ */
 async function updateAllPaymentMessages(
     client,
-    transaction
+    transaction,
+    clickedInteraction = null
 ) {
-    for (
-        const staffMessage
-        of transaction.staffMessages || []
-    ) {
+    const embed = buildPaymentEmbed(transaction);
+    const components = buildPaymentButtons(transaction);
+
+    const clickedMessageId =
+        clickedInteraction?.message?.id || null;
+
+    // Update the exact message the staff member clicked first.
+    if (clickedInteraction?.message) {
         try {
-            const channel =
-                await client.channels.fetch(
-                    staffMessage.channelId
-                );
-
-            const message =
-                await channel.messages.fetch(
-                    staffMessage.messageId
-                );
-
-            await message.edit({
-                embeds: [
-                    buildPaymentEmbed(
-                        transaction
-                    ),
-                ],
-                components:
-                    buildPaymentButtons(
-                        transaction
-                    ),
+            await clickedInteraction.message.edit({
+                embeds: [embed],
+                components,
             });
         } catch (error) {
             console.error(
-                `❌ PAYMENT MESSAGE UPDATE FAILED | Staff: ${staffMessage.staffId} | ${error.message}`
+                `❌ CLICKED PAYMENT MESSAGE UPDATE FAILED | ` +
+                `${transaction.transactionId} | ${error.message}`
             );
         }
     }
+
+    const otherMessages = (
+        transaction.staffMessages || []
+    ).filter(
+        (staffMessage) =>
+            staffMessage.messageId !== clickedMessageId
+    );
+
+    // Update all other staff messages concurrently.
+    const results = await Promise.allSettled(
+        otherMessages.map(async (staffMessage) => {
+            const channel = await client.channels.fetch(
+                staffMessage.channelId
+            );
+
+            if (!channel || !channel.isTextBased()) {
+                throw new Error(
+                    "Payment message channel is unavailable or not text-based."
+                );
+            }
+
+            const message = await channel.messages.fetch(
+                staffMessage.messageId
+            );
+
+            await message.edit({
+                embeds: [embed],
+                components,
+            });
+        })
+    );
+
+    results.forEach((result, index) => {
+        if (result.status === "rejected") {
+            const staffMessage = otherMessages[index];
+
+            console.error(
+                `❌ PAYMENT MESSAGE UPDATE FAILED | ` +
+                `Staff: ${staffMessage.staffId} | ` +
+                `Transaction: ${transaction.transactionId} | ` +
+                `${result.reason?.message || result.reason}`
+            );
+        }
+    });
 }
 
-async function handlePaymentButton(
-    interaction
-) {
-    const prefix =
-        "pierro:payment:paid:";
+async function handlePaymentButton(interaction) {
+    const prefix = "pierro:payment:paid:";
 
-    if (
-        !interaction.customId.startsWith(
-            prefix
-        )
-    ) {
+    if (!interaction.customId.startsWith(prefix)) {
         return false;
     }
 
-    if (
-        !hasPaymentAccess(
-            interaction.user.id
-        )
-    ) {
+    if (!hasPaymentAccess(interaction.user.id)) {
         await interaction.reply({
             content:
                 "❌ You are not authorized to manage Pierro payments.",
-            flags:
-                MessageFlags.Ephemeral,
+            flags: MessageFlags.Ephemeral,
         });
 
         return true;
     }
 
+    // Acknowledge the interaction immediately.
     await interaction.deferUpdate();
 
-    const transactionId =
-        interaction.customId.slice(
-            prefix.length
-        );
+    const transactionId = interaction.customId.slice(
+        prefix.length
+    );
 
-    const transaction =
-        await getPaymentTransaction(
+    try {
+        const transaction = await getPaymentTransaction(
             transactionId
         );
 
-    if (!transaction) {
-        console.warn(
-            `⚠️ PAYMENT NOT FOUND | ${transactionId}`
-        );
+        if (!transaction) {
+            console.warn(
+                `⚠️ PAYMENT NOT FOUND | ${transactionId}`
+            );
 
-        return true;
-    }
+            await interaction.followUp({
+                content:
+                    "⚠️ This payment transaction could not be found.",
+                flags: MessageFlags.Ephemeral,
+            });
 
-    if (
-        transaction.status === "paid"
-    ) {
-        return true;
-    }
+            return true;
+        }
 
-    const updated =
-        await updatePaymentTransaction(
+        if (transaction.status === "paid") {
+            // Keep the clicked message consistent if its button is stale.
+            await interaction.message.edit({
+                embeds: [
+                    buildPaymentEmbed(transaction),
+                ],
+                components:
+                    buildPaymentButtons(transaction),
+            }).catch(() => {});
+
+            return true;
+        }
+
+        const updated = await updatePaymentTransaction(
             transactionId,
             {
-                status:
-                    "paid",
-                paidBy:
-                    interaction.user.id,
-                paidAt:
-                    Date.now(),
+                status: "paid",
+                paidBy: interaction.user.id,
+                paidAt: Date.now(),
+                updatedAt: Date.now(),
             }
         );
 
-    if (updated) {
+        if (!updated) {
+            await interaction.followUp({
+                content:
+                    "⚠️ The transaction could not be updated. Please try again.",
+                flags: MessageFlags.Ephemeral,
+            });
+
+            return true;
+        }
+
+        // Update the clicked DM first; other staff DMs update concurrently.
         await updateAllPaymentMessages(
             interaction.client,
-            updated
+            updated,
+            interaction
         );
 
         console.log(
-            `✅ PAYMENT MARKED PAID | ${transactionId} | Paid By: ${interaction.user.id}`
+            `✅ PAYMENT MARKED PAID | ${transactionId} | ` +
+            `Paid By: ${interaction.user.id}`
         );
+    } catch (error) {
+        console.error(
+            `❌ PAYMENT BUTTON ERROR | ${transactionId} |`,
+            error
+        );
+
+        try {
+            await interaction.followUp({
+                content:
+                    "❌ Something went wrong while updating this payment.",
+                flags: MessageFlags.Ephemeral,
+            });
+        } catch (followUpError) {
+            console.error(
+                `❌ PAYMENT ERROR FOLLOW-UP FAILED | ${transactionId} | ` +
+                `${followUpError.message}`
+            );
+        }
     }
 
     return true;
