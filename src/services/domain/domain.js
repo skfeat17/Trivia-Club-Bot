@@ -38,6 +38,31 @@ const MORA_EMOJI =
 
 /*
 |--------------------------------------------------------------------------
+| DOMAIN IMMUNITY
+|--------------------------------------------------------------------------
+|
+| Add Discord user IDs to this array to make those users immune to death
+| inside every Domain. Keep IDs as strings.
+|
+*/
+const DOMAIN_IMMUNE_USER_IDS = [
+"1242132608574292118"
+];
+
+function isDomainImmune(playerOrId) {
+    const userId =
+        typeof playerOrId === "string"
+            ? playerOrId
+            : playerOrId?.userId;
+
+    return Boolean(
+        userId &&
+        DOMAIN_IMMUNE_USER_IDS.includes(userId)
+    );
+}
+
+/*
+|--------------------------------------------------------------------------
 | DIFFICULTY
 |--------------------------------------------------------------------------
 |
@@ -172,7 +197,7 @@ function shuffle(array) {
 |
 | This does NOT create Discord accounts.
 | It creates internal fake players so one developer account can test
-| a 4-player Domain without needing three extra Discord accounts.
+| a Domain without needing extra Discord accounts.
 |
 | Test players:
 |   - never receive Mora
@@ -186,6 +211,12 @@ const TEST_PLAYER_NAMES = [
     "Test Player 1",
     "Test Player 2",
     "Test Player 3",
+    "Test Player 4",
+    "Test Player 5",
+    "Test Player 6",
+    "Test Player 7",
+    "Test Player 8",
+    "Test Player 9",
 ];
 
 function createTestPlayer(name, index) {
@@ -212,21 +243,37 @@ function isTestPlayer(player) {
 }
 
 function playerDisplay(player) {
+    const immunityBadge =
+        isDomainImmune(player)
+            ? " 🛡️"
+            : "";
+
     if (isTestPlayer(player)) {
-        return `🧪 **${player.displayName || player.username}**`;
+        return `🧪 **${player.displayName || player.username}**${immunityBadge}`;
     }
 
-    return `<@${player.userId}>`;
+    return `<@${player.userId}>${immunityBadge}`;
 }
 
-function chooseDeathCount(difficulty) {
-    if (difficulty.maxDeaths <= difficulty.minDeaths) {
-        return difficulty.minDeaths;
+// Scale the difficulty's death range linearly from a 4-player party.
+// Larger parties therefore have proportionally more planned deaths.
+function chooseDeathCount(difficulty, playerCount) {
+    const scale =
+        Math.max(1, playerCount) / 4;
+
+    const minDeaths =
+        Math.round(difficulty.minDeaths * scale);
+
+    const maxDeaths =
+        Math.round(difficulty.maxDeaths * scale);
+
+    if (maxDeaths <= minDeaths) {
+        return minDeaths;
     }
 
     return randomInt(
-        difficulty.minDeaths,
-        difficulty.maxDeaths
+        minDeaths,
+        maxDeaths
     );
 }
 
@@ -267,15 +314,18 @@ function createWaitingEmbed(domain) {
     const difficulty =
         getDifficulty(domain.mode);
 
+    const maxPlayers =
+        Number(domain.maxPlayers) || 4;
+
     const ready =
-        domain.players.length >= 4;
+        domain.players.length >= maxPlayers;
 
     return new EmbedBuilder()
         .setTitle(
             "🏰 A MYSTERICAL DOMAIN HAS APPEARED"
         )
         .setDescription(
-            "Form a **Party of 4** and conquer this " +
+            `Form a **Party of ${maxPlayers}** and conquer this ` +
             "domain to claim the bounty reward!"
         )
         .addFields(
@@ -296,12 +346,20 @@ function createWaitingEmbed(domain) {
                 value:
                     partyLines(domain),
                 inline: false,
+            },
+            {
+                name: "🛡️ Immunity",
+                value:
+                    DOMAIN_IMMUNE_USER_IDS.length
+                        ? "Users listed in `DOMAIN_IMMUNE_USER_IDS` cannot die."
+                        : "No users are configured as immune.",
+                inline: false,
             }
         )
         .setFooter({
             text: ready
                 ? "⚔️ Party is ready!"
-                : `${domain.players.length}/4 players`,
+                : `${domain.players.length}/${maxPlayers} players`,
         });
 }
 
@@ -766,8 +824,38 @@ function scheduleDeaths(
     const difficulty =
         getDifficulty(domain.mode);
 
+    const requestedDeathCount =
+        chooseDeathCount(
+            difficulty,
+            domain.players.length
+        );
+
+    // Immune players are never placed in the death queue.
+    const eligiblePlayers =
+        domain.players.filter(
+            player =>
+                !isDomainImmune(player) &&
+                player.status === "alive"
+        );
+
+    const immunePlayers =
+        domain.players.filter(
+            player => isDomainImmune(player)
+        );
+
+    // Always leave at least one survivor. If nobody is immune, leave one
+    // non-immune player alive; if immune players exist, they guarantee
+    // at least one survivor, so all non-immune players may be eligible.
+    const maximumPossibleDeaths =
+        immunePlayers.length > 0
+            ? eligiblePlayers.length
+            : Math.max(0, eligiblePlayers.length - 1);
+
     const deathCount =
-        chooseDeathCount(difficulty);
+        Math.min(
+            requestedDeathCount,
+            maximumPossibleDeaths
+        );
 
     domain.plannedDeaths =
         deathCount;
@@ -777,9 +865,7 @@ function scheduleDeaths(
     }
 
     const shuffledPlayers =
-        shuffle(
-            domain.players
-        );
+        shuffle(eligiblePlayers);
 
     /*
      * Deaths happen before the end, but never so late that the final
@@ -1000,7 +1086,10 @@ async function fillDomainWithTestPlayers(interaction) {
         return;
     }
 
-    if (domain.players.length >= 4) {
+    const maxPlayers =
+        Number(domain.maxPlayers) || 4;
+
+    if (domain.players.length >= maxPlayers) {
         await interaction.editReply({
             content:
                 "⚠️ The party is already full.",
@@ -1009,7 +1098,7 @@ async function fillDomainWithTestPlayers(interaction) {
     }
 
     const needed =
-        4 - domain.players.length;
+        maxPlayers - domain.players.length;
 
     const availableNames =
         TEST_PLAYER_NAMES.filter(
@@ -1025,10 +1114,10 @@ async function fillDomainWithTestPlayers(interaction) {
         availableNames
             .slice(0, needed)
             .map(
-                (name, index) =>
+                name =>
                     createTestPlayer(
                         name,
-                        index
+                        Number(name.match(/(\\d+)$/)?.[1] || 1) - 1
                     )
             );
 
@@ -1050,7 +1139,7 @@ async function fillDomainWithTestPlayers(interaction) {
         content:
             `🧪 **Developer Test Party Created**\n\n` +
             `Added:\n${addedText}\n\n` +
-            `Party: **${domain.players.length}/4**\n\n` +
+            `Party: **${domain.players.length}/${maxPlayers}**\n\n` +
             `The test players will **never receive Mora**.`,
     });
 
@@ -1062,7 +1151,7 @@ async function fillDomainWithTestPlayers(interaction) {
         interaction
     );
 
-    if (domain.players.length >= 4) {
+    if (domain.players.length >= maxPlayers) {
         await startDomainBattle(
             interaction,
             domain
@@ -1189,6 +1278,23 @@ async function spawnDomain(interaction) {
             "mode"
         );
 
+    const maxPlayers =
+        interaction.options.getInteger(
+            "players"
+        );
+
+    if (
+        !Number.isInteger(maxPlayers) ||
+        maxPlayers < 4 ||
+        maxPlayers > 10
+    ) {
+        await interaction.editReply({
+            content:
+                "❌ Party size is required when spawning a Domain and must be between 4 and 10 players.",
+        });
+        return;
+    }
+
     if (reward === null || reward === undefined) {
         await interaction.editReply({
             content:
@@ -1237,6 +1343,8 @@ async function spawnDomain(interaction) {
         messageId:
             null,
         reward,
+        maxPlayers,
+        immuneUserIds: [...DOMAIN_IMMUNE_USER_IDS],
         mode:
             difficulty.value,
         status:
@@ -1412,7 +1520,10 @@ async function handleDomainJoinButton(interaction) {
                 return;
             }
 
-            if (domain.players.length >= 4) {
+            const maxPlayers =
+                Number(domain.maxPlayers) || 4;
+
+            if (domain.players.length >= maxPlayers) {
                 await interaction.editReply({
                     content:
                         "⚔️ The party is already full.",
@@ -1448,7 +1559,7 @@ async function handleDomainJoinButton(interaction) {
                     `⚔️ **You joined the Domain party!**
 
 ` +
-                    `Party: **${partyCount}/4**`,
+                    `Party: **${partyCount}/${maxPlayers}**`,
             });
 
             /*
@@ -1463,8 +1574,8 @@ async function handleDomainJoinButton(interaction) {
             const publicInteraction =
                 activeInteractions.get(domain.id);
 
-            if (partyCount >= 4) {
-                // The 4th join starts the battle while still inside the
+            if (partyCount >= maxPlayers) {
+                // The final required join starts the battle while still inside the
                 // per-domain queue, so another click cannot race it.
                 await startDomainBattle(
                     publicInteraction ||
@@ -1528,6 +1639,16 @@ module.exports = {
                             value: "destroy",
                         }
                     )
+            )
+            .addIntegerOption(option =>
+                option
+                    .setName("players")
+                    .setDescription(
+                        "Required when spawning. Party size from 4 to 10 players."
+                    )
+                    .setRequired(false)
+                    .setMinValue(4)
+                    .setMaxValue(10)
             )
             .addIntegerOption(option =>
                 option
