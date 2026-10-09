@@ -243,16 +243,12 @@ function isTestPlayer(player) {
 }
 
 function playerDisplay(player) {
-    const immunityBadge =
-        isDomainImmune(player)
-            ? " 🛡️"
-            : "";
-
+    // Immunity is intentionally hidden from public Domain messages.
     if (isTestPlayer(player)) {
-        return `🧪 **${player.displayName || player.username}**${immunityBadge}`;
+        return `🧪 **${player.displayName || player.username}**`;
     }
 
-    return `<@${player.userId}>${immunityBadge}`;
+    return `<@${player.userId}>`;
 }
 
 // Scale the difficulty's death range linearly from a 4-player party.
@@ -347,14 +343,6 @@ function createWaitingEmbed(domain) {
                     partyLines(domain),
                 inline: false,
             },
-            {
-                name: "🛡️ Immunity",
-                value:
-                    DOMAIN_IMMUNE_USER_IDS.length
-                        ? "Users listed in `DOMAIN_IMMUNE_USER_IDS` cannot die."
-                        : "No users are configured as immune.",
-                inline: false,
-            }
         )
         .setFooter({
             text: ready
