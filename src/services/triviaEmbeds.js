@@ -83,7 +83,9 @@ function resultEmbed(
                     "Explanation",
                 value:
                     question.explanation,
-            });
+            }).setFooter({
+                text: "💳 Payment staff have been notified. Please wait for your payment!",
+            });;
     } else {
         embed
             .setColor(
@@ -102,7 +104,7 @@ function resultEmbed(
                         "Correct Answer",
                     value:
                         question.options[
-                            question.correctAnswer
+                        question.correctAnswer
                         ],
                 },
                 {
