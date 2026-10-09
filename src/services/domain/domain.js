@@ -46,7 +46,7 @@ const MORA_EMOJI =
 |
 */
 const DOMAIN_IMMUNE_USER_IDS = [
-"1242132608574292118"
+
 ];
 
 function isDomainImmune(playerOrId) {
