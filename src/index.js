@@ -283,28 +283,29 @@ client.on(
                 error
             );
 
-            const payload = {
-                content:
-                    "⚠️ Something went wrong while processing this interaction.",
-                flags:
-                    MessageFlags.Ephemeral,
-            };
+            if (error.code === 10062) {
+                console.error(
+                    "⚠️ Interaction expired or was not acknowledged in time."
+                );
+                return;
+            }
 
-            try {
-                if (
-                    interaction.deferred ||
-                    interaction.replied
-                ) {
-                    await interaction.followUp(
-                        payload
-                    );
-                } else {
-                    await interaction.reply(
-                        payload
+            if (
+                interaction.isRepliable() &&
+                !interaction.replied &&
+                !interaction.deferred
+            ) {
+                try {
+                    await interaction.reply({
+                        content: "⚠️ Something went wrong.",
+                        flags: MessageFlags.Ephemeral,
+                    });
+                } catch (replyError) {
+                    console.error(
+                        "❌ Failed to send error reply:",
+                        replyError.message
                     );
                 }
-            } catch (_) {
-                // Interaction may already have expired.
             }
         }
     }

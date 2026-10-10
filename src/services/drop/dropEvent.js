@@ -119,9 +119,18 @@ async function handleDropCommand(interaction) {
        KEEP THIS PRIVATE
     ----------------------------------------- */
 
-    await interaction.deferReply({
-        flags: MessageFlags.Ephemeral,
-    });
+    try {
+        await interaction.deferReply({
+            flags: MessageFlags.Ephemeral,
+        });
+    } catch (error) {
+        console.error(
+            "❌ DROP COMMAND ACKNOWLEDGEMENT FAILED:",
+            error.code,
+            error.message
+        );
+        return;
+    }
 
 
     /* -----------------------------------------
@@ -267,6 +276,24 @@ async function handleDropButton(interaction) {
 
 
     /* -----------------------------------------
+       ACKNOWLEDGE BUTTON IMMEDIATELY
+    ----------------------------------------- */
+
+    try {
+        await interaction.deferReply({
+            flags: MessageFlags.Ephemeral,
+        });
+    } catch (error) {
+        console.error(
+            "❌ DROP BUTTON ACKNOWLEDGEMENT FAILED:",
+            error.code,
+            error.message
+        );
+        return;
+    }
+
+
+    /* -----------------------------------------
        EXTRACT EVENT ID
     ----------------------------------------- */
 
@@ -275,15 +302,6 @@ async function handleDropButton(interaction) {
             "pierro:drop:claim:",
             ""
         );
-
-
-    /* -----------------------------------------
-       DEFER BUTTON RESPONSE
-    ----------------------------------------- */
-
-    await interaction.deferReply({
-        flags: MessageFlags.Ephemeral,
-    });
 
 
     /* -----------------------------------------
@@ -364,7 +382,6 @@ async function handleDropButton(interaction) {
             return;
         }
 
-        await startDropCooldown(userId);
     }
 
 
@@ -386,6 +403,22 @@ async function handleDropButton(interaction) {
         });
 
         return;
+    }
+
+
+    /* -----------------------------------------
+       START COOLDOWN ONLY AFTER WINNING
+    ----------------------------------------- */
+
+    if (!isStaff) {
+        try {
+            await startDropCooldown(userId);
+        } catch (error) {
+            console.error(
+                "❌ Failed to start Mystery Drop cooldown:",
+                error.message
+            );
+        }
     }
 
 

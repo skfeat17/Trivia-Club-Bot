@@ -126,7 +126,7 @@ function runDomainOperation(domainId, operation) {
         Promise.resolve();
 
     const current = previous
-        .catch(() => {})
+        .catch(() => { })
         .then(operation);
 
     domainOperationQueues.set(domainId, current);
@@ -137,7 +137,7 @@ function runDomainOperation(domainId, operation) {
                 domainOperationQueues.delete(domainId);
             }
         })
-        .catch(() => {});
+        .catch(() => { });
 
     return current;
 }
@@ -321,14 +321,17 @@ function createWaitingEmbed(domain) {
             "🏰 A MYSTERICAL DOMAIN HAS APPEARED"
         )
         .setDescription(
-            `Form a **Party of ${maxPlayers}** and conquer this ` +
-            "domain to claim the bounty reward!"
+            domain.playMode === "free"
+                ? `Form a **Party of ${maxPlayers}** and conquer this Domain in **Free Mode**. No Mora rewards are given.`
+                : `Form a **Party of ${maxPlayers}** and conquer this domain to claim the bounty reward!`
         )
         .addFields(
             {
                 name: "💰 Bounty",
                 value:
-                    `**${domain.reward} ${MORA_EMOJI}**`,
+                    domain.playMode === "free"
+                        ? "**Free Mode** — no Mora rewards"
+                        : `**${domain.reward} ${MORA_EMOJI}**`,
                 inline: true,
             },
             {
@@ -361,7 +364,9 @@ function createBattleEmbed(domain) {
         )
         .setDescription(
             "The party is currently fighting inside the domain.\n\n" +
-            "Survive the battle and claim the bounty!"
+                domain.playMode === "free"
+                ? "Survive the battle! This Domain is in Free Mode, so no Mora will be paid."
+                : "Survive the battle and claim the bounty!"
         )
         .addFields(
             {
@@ -433,7 +438,9 @@ function createCompletedEmbed(domain) {
             {
                 name: "💰 Bounty",
                 value:
-                    `**${domain.reward} ${MORA_EMOJI}**`,
+                    domain.playMode === "free"
+                        ? "**Free Mode** — no Mora rewards"
+                        : `**${domain.reward} ${MORA_EMOJI}**`,
                 inline: true,
             },
             {
@@ -463,10 +470,12 @@ function createCompletedEmbed(domain) {
             {
                 name: "💰 Reward",
                 value:
-                    domain.rewardPerSurvivor > 0
-                        ? `The bounty was divided equally among ${survivors.length} survivor(s).\n` +
-                          `Each survivor receives **${domain.rewardPerSurvivor} ${MORA_EMOJI}**.`
-                        : "No reward was paid.",
+                    domain.playMode === "free"
+                        ? "Free Mode was selected. No Mora was paid."
+                        : domain.rewardPerSurvivor > 0
+                            ? `The bounty was divided equally among ${survivors.length} survivor(s).\n` +
+                            `Each survivor receives **${domain.rewardPerSurvivor} ${MORA_EMOJI}**.`
+                            : "No reward was paid.",
                 inline: false,
             }
         );
@@ -597,7 +606,7 @@ async function finalizeDomain(
                 ...player,
                 status:
                     player.status === "dead" ||
-                    deadPlayerIds.has(player.userId)
+                        deadPlayerIds.has(player.userId)
                         ? "dead"
                         : "alive",
             }));
@@ -606,7 +615,14 @@ async function finalizeDomain(
             player => player.userId
         );
 
-        if (!survivors.length) {
+        if (domain.playMode === "free") {
+            // Free Domains never create payment transactions or Mora stats.
+            domain.rewardPerSurvivor = 0;
+            domain.rewardShares = [];
+            for (const survivor of survivors) {
+                survivor.reward = 0;
+            }
+        } else if (!survivors.length) {
             // Safety guard. The death scheduler never intentionally
             // kills the whole party, but never pay a reward if it happens.
             domain.rewardPerSurvivor = 0;
@@ -696,7 +712,7 @@ async function finalizeDomain(
     try {
         await updatePublicDomainMessage(
             interaction ||
-                activeInteractions.get(domainId),
+            activeInteractions.get(domainId),
             domain,
             []
         );
@@ -1105,7 +1121,7 @@ async function fillDomainWithTestPlayers(interaction) {
                 name =>
                     createTestPlayer(
                         name,
-                        Number(name.match(/(\\d+)$/)?.[1] || 1) - 1
+                        Number(name.match(/(\d+)$/)?.[1] || 1) - 1
                     )
             );
 
@@ -1159,9 +1175,21 @@ async function fillDomainWithTestPlayers(interaction) {
 }
 
 async function handleDomainCommand(interaction) {
-    await interaction.deferReply({
-        flags: MessageFlags.Ephemeral,
-    });
+    try {
+        if (!interaction.deferred && !interaction.replied) {
+            await interaction.deferReply({
+                flags: MessageFlags.Ephemeral,
+            });
+        }
+    } catch (error) {
+        console.error(
+            "❌ DOMAIN ACKNOWLEDGEMENT FAILED:",
+            error.code,
+            error.message
+        );
+
+        return;
+    }
 
     if (
         !hasCommandAccess(
@@ -1256,14 +1284,18 @@ async function spawnDomain(interaction) {
         await clearActiveDomainId();
     }
 
-    const reward =
+    const rewardOption =
         interaction.options.getInteger(
             "reward"
         );
 
+    // Rewarded is the default when playmode is not explicitly selected.
+    const playMode =
+        interaction.options.getString("playmode") || "rewarded";
+
     const mode =
         interaction.options.getInteger(
-            "mode"
+            "difficulty"
         );
 
     const maxPlayers =
@@ -1283,13 +1315,23 @@ async function spawnDomain(interaction) {
         return;
     }
 
-    if (reward === null || reward === undefined) {
+    if (playMode !== "rewarded" && playMode !== "free") {
         await interaction.editReply({
             content:
-                "❌ You must provide a Mora reward when spawning a domain.",
+                "❌ Select a play mode: Rewarded or Free.",
         });
         return;
     }
+
+    if (playMode === "rewarded" && (rewardOption === null || rewardOption === undefined)) {
+        await interaction.editReply({
+            content:
+                "❌ Rewarded Mode requires a total Mora bounty.",
+        });
+        return;
+    }
+
+    const reward = playMode === "free" ? 0 : rewardOption;
 
     if (mode === null || mode === undefined) {
         await interaction.editReply({
@@ -1311,12 +1353,12 @@ async function spawnDomain(interaction) {
     }
 
     if (
-        !Number.isInteger(reward) ||
-        reward <= 0
+        playMode === "rewarded" &&
+        (!Number.isInteger(reward) || reward <= 0)
     ) {
         await interaction.editReply({
             content:
-                "❌ Reward must be a positive whole number.",
+                "❌ Rewarded Mode requires a positive whole-number Mora bounty.",
         });
         return;
     }
@@ -1331,6 +1373,7 @@ async function spawnDomain(interaction) {
         messageId:
             null,
         reward,
+        playMode,
         maxPlayers,
         immuneUserIds: [...DOMAIN_IMMUNE_USER_IDS],
         mode:
@@ -1359,7 +1402,9 @@ async function spawnDomain(interaction) {
 
     await interaction.editReply({
         content:
-            `✅ **${difficulty.emoji} ${difficulty.label} Domain** spawned with a bounty of **${reward} ${MORA_EMOJI}**.`,
+            playMode === "free"
+                ? `✅ **${difficulty.emoji} ${difficulty.label} Domain** spawned in **Free Mode**. No Mora rewards will be paid.`
+                : `✅ **${difficulty.emoji} ${difficulty.label} Domain** spawned in **Rewarded Mode** with a bounty of **${reward} ${MORA_EMOJI}**.`,
     });
 
     try {
@@ -1426,7 +1471,7 @@ async function destroyDomain(interaction) {
         domain.id,
         "destroyed",
         activeInteractions.get(domain.id) ||
-            interaction
+        interaction
     );
 
     await interaction.editReply({
@@ -1459,6 +1504,11 @@ async function handleDomainJoinButton(interaction) {
         interaction.customId.slice(
             prefix.length
         );
+
+    // Show feedback immediately, before waiting for the per-domain queue or Redis.
+    await interaction.editReply({
+        content: "⚔️ You entered the Domain queue! Let's see if you make it into the party..."
+    });
 
     /*
      * DO NOT use the Redis domain lock for Join buttons.
@@ -1567,14 +1617,14 @@ async function handleDomainJoinButton(interaction) {
                 // per-domain queue, so another click cannot race it.
                 await startDomainBattle(
                     publicInteraction ||
-                        interaction,
+                    interaction,
                     domain
                 );
             } else {
                 try {
                     await updatePublicDomainMessage(
                         publicInteraction ||
-                            interaction,
+                        interaction,
                         domain
                     );
                 } catch (error) {
@@ -1608,7 +1658,7 @@ module.exports = {
         new SlashCommandBuilder()
             .setName("domain")
             .setDescription(
-                "Spawn or destroy a temporary 4-player Pierro Domain."
+                "Spawn, destroy, or test a temporary Pierro Domain with 4–10 players."
             )
             .addStringOption(option =>
                 option
@@ -1625,6 +1675,10 @@ module.exports = {
                         {
                             name: "Destroy",
                             value: "destroy",
+                        },
+                        {
+                            name: "🧪 Developer Test Party",
+                            value: "testparty",
                         }
                     )
             )
@@ -1638,20 +1692,13 @@ module.exports = {
                     .setMinValue(4)
                     .setMaxValue(10)
             )
+
+
             .addIntegerOption(option =>
                 option
-                    .setName("reward")
+                    .setName("difficulty")
                     .setDescription(
-                        "Total Mora bounty. Required when spawning."
-                    )
-                    .setRequired(false)
-                    .setMinValue(1)
-            )
-            .addIntegerOption(option =>
-                option
-                    .setName("mode")
-                    .setDescription(
-                        "Difficulty. Required when spawning."
+                        "Domain difficulty. Required when spawning."
                     )
                     .setRequired(false)
                     .addChoices(
@@ -1670,6 +1717,31 @@ module.exports = {
                         {
                             name: "☠️ Dire",
                             value: 3,
+                        }
+                    )
+            ).addIntegerOption(option =>
+                option
+                    .setName("reward")
+                    .setDescription(
+                        "Total Mora bounty. Required for Rewarded Mode; ignored in Free Mode."
+                    )
+                    .setRequired(false)
+                    .setMinValue(1)
+            ).addStringOption(option =>
+                option
+                    .setName("playmode")
+                    .setDescription(
+                        "Choose the play mode. Defaults to Rewarded."
+                    )
+                    .setRequired(false)
+                    .addChoices(
+                        {
+                            name: "💰 Rewarded",
+                            value: "rewarded",
+                        },
+                        {
+                            name: "🆓 Free",
+                            value: "free",
                         }
                     )
             ),

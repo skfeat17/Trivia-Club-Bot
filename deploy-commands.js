@@ -34,7 +34,12 @@ const commands = [
     dropCommand.toJSON(),
     domainCommand.toJSON()
 ];
-
+console.log(
+    commands.map(command => ({
+        name: command.name,
+        description: command.description,
+    }))
+);
 const rest =
     new REST({
         version:
