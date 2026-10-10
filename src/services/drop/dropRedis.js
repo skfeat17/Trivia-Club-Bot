@@ -24,7 +24,7 @@ const DROP_CLAIM_LOCK_SECONDS =
     30;
 
 const DROP_USER_COOLDOWN_SECONDS =
-    60 * 60;
+    20;
 
 
 /* =========================================================
