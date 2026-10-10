@@ -30,9 +30,9 @@ const commands = [
     triviaCommand.toJSON(),
     cooldownCommand.toJSON(),
     statsCommand.toJSON(),
-    giveawayCommand.toJSON(),
-    dropCommand.toJSON(),
-    domainCommand.toJSON()
+    // giveawayCommand.toJSON(),
+    // dropCommand.toJSON(),
+    // domainCommand.toJSON()
 ];
 console.log(
     commands.map(command => ({
