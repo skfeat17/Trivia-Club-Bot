@@ -42,7 +42,7 @@ const MORA_EMOJI =
 function buildDropEmbed(drop) {
     const completed =
         drop.status === "completed";
-
+      console.log(`🎁 Mystery Drop By: ${drop.createdUser.globalName}`)
     return new EmbedBuilder()
         .setTitle(
             completed
@@ -213,6 +213,9 @@ async function handleDropCommand(interaction) {
 
         createdBy:
             interaction.user.id,
+        createdUser :
+          interaction.user,
+
     };
 
 
