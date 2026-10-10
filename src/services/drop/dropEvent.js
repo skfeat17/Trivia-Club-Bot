@@ -337,11 +337,11 @@ async function handleDropButton(interaction) {
        STAFF ARE IMMUNE TO COOLDOWN
     ----------------------------------------- */
 
-    const isStaff = 
-        hasCommandAccess(
-            "drop",
-            userId
-        );
+    const isStaff = false
+        // hasCommandAccess(
+        //     "drop",
+        //     userId
+        // );
 
 
     /* -----------------------------------------
