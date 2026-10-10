@@ -59,8 +59,8 @@ function buildDropEmbed(drop) {
         completed
             ? `🏆 **Claimed by:** <@${drop.winnerId}>\n\nThe mystery has been claimed!`
             : "🏃 Be the first to claim it!\n\n" +
-              '*"Only the swift shall know what fortune awaits."*\n\n' +
-              `**Mystery Drop By:** <@${drop.createdBy}>`
+              '*"Only the swift shall know what fortune awaits."*\n\n' 
+            //   +`**Mystery Drop By:** <@${drop.createdBy}>`
     )
 
         )
