@@ -55,13 +55,15 @@ function buildDropEmbed(drop) {
                 ? `**${drop.amount} ${MORA_EMOJI}**`
                 : "???"
             }\n\n` +
-            (
-                completed
-                    ? `🏆 **Claimed by:** <@${drop.winnerId}>\n\nThe mystery has been claimed!`
-                    : "🏃 Be the first to claim it!\n\n" +
-                    '*"Only the swift shall know what fortune awaits."*'
-            )
-        );
+             (
+        completed
+            ? `🏆 **Claimed by:** <@${drop.winnerId}>\n\nThe mystery has been claimed!`
+            : "🏃 Be the first to claim it!\n\n" +
+              '*"Only the swift shall know what fortune awaits."*\n\n' +
+              `**Mystery Drop By:** <@${drop.createdBy}>`
+    )
+
+        )
 }
 
 
@@ -338,10 +340,10 @@ async function handleDropButton(interaction) {
     ----------------------------------------- */
 
     const isStaff = false
-        // hasCommandAccess(
-        //     "drop",
-        //     userId
-        // );
+    // hasCommandAccess(
+    //     "drop",
+    //     userId
+    // );
 
 
     /* -----------------------------------------
