@@ -329,19 +329,20 @@ async function handleTriviaAnswer(
     | RECORD PARTICIPATION
     |--------------------------------------------------------------------------
     */
+    let triviaActivity = null;
 
     try {
-        await recordParticipation(
+        triviaActivity = await recordParticipation(
             interaction.user.id,
-            correct
-                ? "correct"
-                : "incorrect"
+            correct ? "correct" : "incorrect"
         );
     } catch (error) {
         console.error(
             `❌ TRIVIA PARTICIPATION RECORD FAILED | ${error.message}`
         );
     }
+
+
 
 
     /*
@@ -456,11 +457,13 @@ async function handleTriviaAnswer(
     | RECORD MORA STATISTICS
     |--------------------------------------------------------------------------
     */
+    // Only award Mora for a correct answer.
 
     try {
         await recordMora(
             interaction.user.id,
-            reward
+            reward,
+                triviaActivity?.activityId
         );
     } catch (error) {
         console.error(

@@ -1,3 +1,4 @@
+
 const {
     SlashCommandBuilder,
     MessageFlags,
@@ -8,11 +9,9 @@ const {
 } = require("./COMMAND_ACCESS");
 
 const {
-    getParticipationStats,
-    getGlobalParticipationStats,
+    getLast24Hours,
     getCooldownStats,
     getGlobalCooldownStats,
-    getLast24Hours,
 } = require("./statsService");
 
 const {
@@ -27,57 +26,59 @@ const statsCommand =
         .setDescription(
             "View Pierro Permanent Trivia statistics."
         )
-        .addStringOption(
-            option =>
-                option
-                    .setName("event")
-                    .setDescription(
-                        "The event."
-                    )
-                    .setRequired(true)
-                    .addChoices({
-                        name:
-                            "trivia",
-                        value:
-                            "trivia",
-                    })
+        .addStringOption(option =>
+            option
+                .setName("event")
+                .setDescription("The event.")
+                .setRequired(true)
+                .addChoices({
+                    name: "trivia",
+                    value: "trivia",
+                })
         )
-        .addStringOption(
-            option =>
-                option
-                    .setName("type")
-                    .setDescription(
-                        "Statistic category."
-                    )
-                    .setRequired(true)
-                    .addChoices(
-                        {
-                            name:
-                                "participations",
-                            value:
-                                "participations",
-                        },
-                        {
-                            name:
-                                "cooldown",
-                            value:
-                                "cooldown",
-                        }
-                    )
+        .addStringOption(option =>
+            option
+                .setName("type")
+                .setDescription("Statistic category.")
+                .setRequired(true)
+                .addChoices(
+                    {
+                        name: "participations",
+                        value: "participations",
+                    },
+                    {
+                        name: "cooldown",
+                        value: "cooldown",
+                    }
+                )
         )
-        .addUserOption(
-            option =>
-                option
-                    .setName("user")
-                    .setDescription(
-                        "Optional user."
-                    )
-                    .setRequired(false)
+        .addUserOption(option =>
+            option
+                .setName("user")
+                .setDescription(
+                    "Optional user to check."
+                )
+                .setRequired(false)
         );
 
-async function handleStatsCommand(
-    interaction
-) {
+function formatNumber(value) {
+    return Number(value || 0)
+        .toLocaleString("en-IN");
+}
+
+function formatStats(title, stats) {
+    return (
+        `## 📊 ${title}\n\n` +
+        `👥 **Unique Participants:** ${formatNumber(stats.participants)}\n` +
+        `📝 **Total Attempts:** ${formatNumber(stats.total)}\n` +
+        `✅ **Correct Answers:** ${formatNumber(stats.correct)}\n` +
+        `❌ **Incorrect Answers:** ${formatNumber(stats.incorrect)}\n` +
+        `💰 **Mora Awarded:** ${formatNumber(stats.mora)} Mora\n` +
+        `📈 **Average Mora per Attempt:** ${formatNumber(stats.averageMora)} Mora`
+    );
+}
+
+async function handleStatsCommand(interaction) {
     if (
         !hasCommandAccess(
             "stats",
@@ -87,8 +88,7 @@ async function handleStatsCommand(
         await interaction.reply({
             content:
                 "❌ You are not authorized to view Pierro stats.",
-            flags:
-                MessageFlags.Ephemeral,
+            flags: MessageFlags.Ephemeral,
         });
 
         return;
@@ -101,79 +101,88 @@ async function handleStatsCommand(
         );
 
     const user =
-        interaction.options.getUser(
-            "user"
-        );
+        interaction.options.getUser("user");
 
-    if (
-        type ===
-        "participations"
-    ) {
-        const stats =
-            user
-                ? await getParticipationStats(
-                    user.id
-                )
-                : await getGlobalParticipationStats();
-
-        const last24 =
-            await getLast24Hours();
-
-        const target =
-            user
-                ? `${user}'s`
-                : "Global";
-
-        await interaction.reply({
-            content:
-                `📊 **${target} Trivia Participations**\n\n` +
-                `Total: **${stats.total}**\n` +
-                `Correct: **${stats.correct}**\n` +
-                `Incorrect: **${stats.incorrect}**\n` +
-                `Mora Awarded: **${stats.mora}**\n\n` +
-                `Last 24h: **${last24.totalParticipations}** participations`,
-            flags:
-                MessageFlags.Ephemeral,
+    if (type === "participations") {
+        await interaction.deferReply({
+            flags: MessageFlags.Ephemeral,
         });
+
+        try {
+            const stats = await getLast24Hours(
+                Date.now(),
+                user?.id || null
+            );
+
+            const title = user
+                ? `${user.username}'s Trivia — Last 24 Hours`
+                : "Global Trivia — Last 24 Hours";
+
+            await interaction.editReply({
+                content: formatStats(
+                    title,
+                    stats
+                ),
+            });
+        } catch (error) {
+            console.error(
+                "❌ LAST 24 HOURS STATS FAILED:",
+                error
+            );
+
+            await interaction.editReply({
+                content:
+                    "❌ Failed to retrieve trivia statistics. Please try again.",
+            });
+        }
 
         return;
     }
 
-    if (
-        type ===
-        "cooldown"
-    ) {
-        if (user) {
-            const stats =
-                await getCooldownStats(
-                    user.id
-                );
-
-            await interaction.reply({
-                content:
-                    `⏳ **${user}'s Trivia Cooldowns**\n\n` +
-                    `Cooldowns started: **${stats.cooldownsStarted}**`,
-                flags:
-                    MessageFlags.Ephemeral,
-            });
-
-            return;
-        }
-
-        const stats =
-            await getGlobalCooldownStats();
-
-        const active =
-            await countActiveCooldowns();
-
-        await interaction.reply({
-            content:
-                `⏳ **Global Trivia Cooldowns**\n\n` +
-                `Cooldowns started: **${stats.cooldownsStarted}**\n` +
-                `Currently active: **${active}`,
-            flags:
-                MessageFlags.Ephemeral,
+    if (type === "cooldown") {
+        await interaction.deferReply({
+            flags: MessageFlags.Ephemeral,
         });
+
+        try {
+            if (user) {
+                const stats =
+                    await getCooldownStats(user.id);
+
+                await interaction.editReply({
+                    content:
+                        `## ⏳ ${user.username}'s Trivia Cooldowns\n\n` +
+                        `Cooldowns Started: **${formatNumber(stats.cooldownsStarted)}**`,
+                });
+
+                return;
+            }
+
+            const [
+                stats,
+                active,
+            ] = await Promise.all([
+                getGlobalCooldownStats(),
+                countActiveCooldowns(),
+            ]);
+
+            await interaction.editReply({
+                content:
+                    "# ⏳ Global Trivia Cooldowns\n\n" +
+                    `Cooldowns Started: **${formatNumber(stats.cooldownsStarted)}**\n` +
+                    `Currently Active: **${formatNumber(active)}**`,
+            });
+        } catch (error) {
+            console.error(
+                "❌ COOLDOWN STATS FAILED:",
+                error
+            );
+
+            await interaction.editReply({
+                content:
+                    "❌ Failed to retrieve cooldown statistics.",
+            });
+        }
     }
 }
 
@@ -181,3 +190,4 @@ module.exports = {
     statsCommand,
     handleStatsCommand,
 };
+
