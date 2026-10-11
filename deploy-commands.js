@@ -30,7 +30,7 @@ const commands = [
     triviaCommand.toJSON(),
     cooldownCommand.toJSON(),
     statsCommand.toJSON(),
-    // giveawayCommand.toJSON(),
+    giveawayCommand.toJSON(),
     // dropCommand.toJSON(),
     // domainCommand.toJSON()
 ];
