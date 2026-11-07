@@ -13,98 +13,79 @@ const {
     getActiveGiveawayId,
     setActiveGiveawayId,
     clearActiveGiveawayId,
-
     getGiveaway,
     saveGiveaway,
-
     addParticipant,
     getParticipants,
     getParticipantCount,
-
+    getPreviousWinnerId,
+    setPreviousWinnerId,
     acquireGiveawayLock,
     releaseGiveawayLock,
 } = require("./giveawayRedis");
 
-const {
-    hasCommandAccess,
-} = require("../COMMAND_ACCESS");
+const { hasCommandAccess } = require("../COMMAND_ACCESS");
 
-
-// ============================================================
-// TIMERS
-// ============================================================
-
-const timers = new Map();
-
-// Keeps the original slash interaction available while the bot stays online.
-// It cannot survive a process restart. Post-restart Discord UI updates are
-// therefore skipped rather than using normal channel permissions.
 const activeInteractions = new Map();
+const giveawayTimers = new Map();
 
+const MAX_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
 
 // ============================================================
-// DURATION PARSER
+// STAFF IDS
+// .env example:
+// STAFF_USER_IDS=123456789012345678,234567890123456789
+// ============================================================
+
+function getStaffUserIds() {
+    return [
+        ...new Set(
+            (process.env.STAFF_USER_IDS || "")
+                .split(",")
+                .map(id => id.trim())
+                .filter(id => /^\d{17,20}$/.test(id))
+        ),
+    ];
+}
+
+// ============================================================
+// DURATION
 // ============================================================
 
 function parseDuration(input) {
+    if (!input) return null;
 
-    if (!input) {
-        return null;
-    }
+    const match = String(input)
+        .trim()
+        .toLowerCase()
+        .match(/^(\d+)\s*(s|sec|secs|m|min|mins|h|hr|hrs|d|day|days)$/);
 
-    const match =
-        String(input)
-            .trim()
-            .toLowerCase()
-            .match(
-                /^(\d+)\s*(s|sec|secs|m|min|mins|h|hr|hrs|d|day|days)$/
-            );
+    if (!match) return null;
 
-    if (!match) {
-        return null;
-    }
+    const amount = Number(match[1]);
+    const unit = match[2];
 
-    const amount =
-        Number(match[1]);
+    const multipliers = {
+        s: 1000,
+        sec: 1000,
+        secs: 1000,
+        m: 60 * 1000,
+        min: 60 * 1000,
+        mins: 60 * 1000,
+        h: 60 * 60 * 1000,
+        hr: 60 * 60 * 1000,
+        hrs: 60 * 60 * 1000,
+        d: 24 * 60 * 60 * 1000,
+        day: 24 * 60 * 60 * 1000,
+        days: 24 * 60 * 60 * 1000,
+    };
 
-    const unit =
-        match[2];
-
-    let multiplier;
-
-    if (
-        ["s", "sec", "secs"].includes(unit)
-    ) {
-        multiplier = 1000;
-    }
-
-    else if (
-        ["m", "min", "mins"].includes(unit)
-    ) {
-        multiplier = 60 * 1000;
-    }
-
-    else if (
-        ["h", "hr", "hrs"].includes(unit)
-    ) {
-        multiplier = 60 * 60 * 1000;
-    }
-
-    else {
-        multiplier =
-            24 * 60 * 60 * 1000;
-    }
-
-    const duration =
-        amount * multiplier;
-
-    // Maximum 30 days
-    const MAX_DURATION =
-        30 * 24 * 60 * 60 * 1000;
+    const duration = amount * multipliers[unit];
 
     if (
+        !Number.isSafeInteger(duration) ||
         duration <= 0 ||
-        duration > MAX_DURATION
+        duration > MAX_DURATION_MS
     ) {
         return null;
     }
@@ -112,1070 +93,680 @@ function parseDuration(input) {
     return duration;
 }
 
-
 // ============================================================
 // ID
 // ============================================================
 
 function generateGiveawayId() {
-
     return (
         "gw_" +
         Date.now().toString(36) +
         "_" +
-        crypto
-            .randomBytes(4)
-            .toString("hex")
+        crypto.randomBytes(4).toString("hex")
     );
 }
 
-
 // ============================================================
-// EMBED
+// EMBEDS / COMPONENTS
 // ============================================================
 
-function createGiveawayEmbed(
-    giveaway,
-    participantCount
-) {
-
-    const baseDescription =
-        `**Giveaway for:** ${giveaway.name}\n\n` +
-        giveaway.description;
-
-    const embed =
-        new EmbedBuilder()
-            .setTitle("🎉 Giveaway")
-            .setDescription(baseDescription)
-            .addFields({
-                name: "⏳ Ends",
-                value:
-                    `<t:${Math.floor(
-                        giveaway.endsAt / 1000
-                    )}:R>`,
+function createGiveawayEmbed(giveaway, participantCount) {
+    return new EmbedBuilder()
+        .setColor(giveaway.expired ? 0xE67E22 : 0x5865F2)
+        .setTitle(`🎉 ${giveaway.name}`)
+        .setDescription(giveaway.description)
+        .addFields(
+            {
+                name: "👥 Participants",
+                value: String(participantCount),
                 inline: true,
-            });
+            },
+            {
+                name: giveaway.expired ? "⏰ Expired" : "⏳ Expires",
+                value: `<t:${Math.floor(giveaway.endsAt / 1000)}:R>`,
+                inline: true,
+            }
+        )
+        .setFooter({
+            text: giveaway.expired
+                ? "Entries are closed. Staff will select the winner."
+                : "Press Participate to enter!",
+        });
+}
 
-    if (giveaway.status === "completed") {
-        if (giveaway.winnerId) {
-            embed
-                .setTitle("🏆 Giveaway")
-                .setDescription(baseDescription)
-                .addFields(
-                    {
-                        name: "🏆 Winner",
-                        value: `<@${giveaway.winnerId}>`,
-                        inline: false,
-                    },
-                    {
-                        name: "👥 Total Participants",
-                        value: String(giveaway.participantCountAtEnd),
-                        inline: true,
-                    }
-                );
-        } else {
-            embed
-                .setTitle("❌ Giveaway")
-                .setDescription(
-                    baseDescription +
-                    "\n\nNo one participated in this giveaway."
-                );
-        }
+function createWinnerEmbed(giveaway) {
+    return new EmbedBuilder()
+        .setColor(0xF1C40F)
+        .setTitle("🏆 GIVEAWAY WINNER!")
+        .setDescription(
+            `**${giveaway.name}**\n\n` +
+            (
+                giveaway.winnerId
+                    ? `Congratulations <@${giveaway.winnerId}>! 🎉\nYou won the giveaway!`
+                    : "No one participated in this giveaway."
+            )
+        )
+        .addFields({
+            name: "👥 Total Participants",
+            value: String(giveaway.participantCountAtEnd),
+            inline: true,
+        })
+        .setTimestamp();
+}
+
+function createParticipateRow(giveawayId, disabled = false) {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`pierro:giveaway:participate:${giveawayId}`)
+            .setLabel("Participate")
+            .setEmoji("🎟️")
+            .setStyle(ButtonStyle.Primary)
+            .setDisabled(disabled)
+    );
+}
+
+// ============================================================
+// STAFF EXPIRATION NOTIFICATION (DM)
+// ============================================================
+
+async function notifyStaffGiveawayExpired(client, giveawayId) {
+    const locked = await acquireGiveawayLock();
+
+    if (!locked) {
+        console.warn("⚠️ Giveaway expiry lock is busy; retrying shortly.");
+        const retryTimer = setTimeout(() => {
+            notifyStaffGiveawayExpired(client, giveawayId).catch(error =>
+                console.error("❌ Giveaway expiry retry failed:", error)
+            );
+        }, 5000);
+        retryTimer.unref?.();
+        return;
     }
 
-    return embed;
+    let giveaway = null;
+
+    try {
+        giveaway = await getGiveaway(giveawayId);
+
+        if (
+            !giveaway ||
+            giveaway.status !== "active" ||
+            Date.now() < giveaway.endsAt ||
+            giveaway.expirationNotifiedAt
+        ) {
+            return;
+        }
+
+        // Save the notification marker before sending DMs to prevent
+        // duplicate notifications after a restart or repeated timer.
+        giveaway.expired = true;
+        giveaway.expiredAt = Date.now();
+        giveaway.expirationNotifiedAt = Date.now();
+
+        await saveGiveaway(giveaway);
+    } finally {
+        await releaseGiveawayLock();
+    }
+
+    const staffIds = getStaffUserIds();
+
+    if (staffIds.length === 0) {
+        console.warn(
+            "⚠️ STAFF_USER_IDS is empty or contains no valid Discord IDs."
+        );
+        return;
+    }
+
+    const guild = client.guilds.cache.get(giveaway.guildId);
+    const channelName = guild?.channels?.cache?.get(giveaway.channelId)?.name;
+    const messageLink =
+        `https://discord.com/channels/${giveaway.guildId}/${giveaway.channelId}/${giveaway.messageId}`;
+
+    const participantCount = await getParticipantCount(giveawayId);
+
+    const notificationEmbed = new EmbedBuilder()
+        .setColor(0xE67E22)
+        .setTitle("⏰ GIVEAWAY EXPIRED")
+        .setDescription(
+            "Entries are now closed. The giveaway and its participant list are safely in Redis.\n\n" +
+            "Run **/giveaway action:end** in the server to select and announce the winner."
+        )
+        .addFields(
+            {
+                name: "🎁 Giveaway",
+                value: giveaway.name,
+                inline: false,
+            },
+            {
+                name: "👥 Participants",
+                value: String(participantCount),
+                inline: true,
+            },
+            {
+                name: "📢 Channel",
+                value: channelName ? `#${channelName}` : `<#${giveaway.channelId}>`,
+                inline: true,
+            },
+            {
+                name: "🔗 Giveaway Message",
+                value: `[Jump to giveaway](${messageLink})`,
+                inline: false,
+            }
+        )
+        .setFooter({
+            text: "Staff action required • Use /giveaway action:end",
+        })
+        .setTimestamp();
+
+    for (const staffId of staffIds) {
+        try {
+            const staffUser = await client.users.fetch(staffId);
+            await staffUser.send({
+                embeds: [notificationEmbed],
+            });
+        } catch (error) {
+            console.error(
+                `❌ Could not DM giveaway expiry notification to staff ${staffId}:`,
+                error.message
+            );
+        }
+    }
+}
+
+// ============================================================
+// EXPIRATION TIMER
+// ============================================================
+
+function scheduleGiveawayExpiry(client, giveaway) {
+    const existingTimer = giveawayTimers.get(giveaway.id);
+
+    if (existingTimer) {
+        clearTimeout(existingTimer);
+        giveawayTimers.delete(giveaway.id);
+    }
+
+    const delay = Math.max(0, giveaway.endsAt - Date.now());
+
+    const timer = setTimeout(async () => {
+        giveawayTimers.delete(giveaway.id);
+
+        try {
+            await notifyStaffGiveawayExpired(client, giveaway.id);
+        } catch (error) {
+            console.error("❌ Giveaway expiry handler failed:", error);
+        }
+    }, delay);
+
+    giveawayTimers.set(giveaway.id, timer);
+}
+
+// ============================================================
+// START GIVEAWAY
+// ============================================================
+
+async function startGiveaway(interaction) {
+    const name = interaction.options.getString("title");
+    const description = interaction.options.getString("description");
+    const durationInput = interaction.options.getString("duration");
+    const durationMs = parseDuration(durationInput);
+
+    if (!name || !description || !durationMs) {
+        await interaction.editReply(
+            "❌ Provide a **title**, **description**, and valid **duration** (`30s`, `10m`, `2h`, `1d`). Maximum duration is 30 days."
+        );
+        return;
+    }
+
+    const locked = await acquireGiveawayLock();
+
+    if (!locked) {
+        await interaction.editReply(
+            "⚠️ Another giveaway operation is currently running. Try again shortly."
+        );
+        return;
+    }
+
+    let giveaway;
+
+    try {
+        const activeId = await getActiveGiveawayId();
+
+        if (activeId) {
+            await interaction.editReply("⚠️ A giveaway is already active.");
+            return;
+        }
+
+        const now = Date.now();
+
+        giveaway = {
+            id: generateGiveawayId(),
+            guildId: interaction.guildId,
+            channelId: interaction.channelId,
+            messageId: null,
+            name,
+            description,
+            durationMs,
+            startedAt: now,
+            endsAt: now + durationMs,
+            status: "active",
+            expired: false,
+            expiredAt: null,
+            expirationNotifiedAt: null,
+            startedBy: interaction.user.id,
+            winnerId: null,
+            participantCountAtEnd: 0,
+            endingReason: null,
+            finishedAt: null,
+        };
+
+        await saveGiveaway(giveaway);
+        await setActiveGiveawayId(giveaway.id);
+    } finally {
+        await releaseGiveawayLock();
+    }
+
+    try {
+        // This is the public deferred slash-command response.
+        // No channel.send() or elevated channel permissions are needed.
+        const message = await interaction.editReply({
+            embeds: [createGiveawayEmbed(giveaway, 0)],
+            components: [createParticipateRow(giveaway.id)],
+        });
+
+        giveaway.messageId = message.id;
+        await saveGiveaway(giveaway);
+
+        activeInteractions.set(giveaway.id, interaction);
+        scheduleGiveawayExpiry(interaction.client, giveaway);
+    } catch (error) {
+        console.error("❌ Giveaway public message error:", error);
+
+        const lockedAgain = await acquireGiveawayLock();
+
+        if (lockedAgain) {
+            try {
+                await clearActiveGiveawayId();
+
+                if (giveaway) {
+                    giveaway.status = "cancelled";
+                    await saveGiveaway(giveaway);
+                }
+            } finally {
+                await releaseGiveawayLock();
+            }
+        }
+
+        await interaction.editReply(
+            "❌ The giveaway could not be published."
+        );
+    }
 }
 
 // ============================================================
 // PARTICIPATE BUTTON
 // ============================================================
 
-function createParticipateRow(
-    giveawayId,
-    disabled = false
-) {
-
-    const button =
-        new ButtonBuilder()
-            .setCustomId(
-                `pierro:giveaway:participate:${giveawayId}`
-            )
-            .setLabel("Participate")
-            .setEmoji("🎟️")
-            .setStyle(
-                ButtonStyle.Primary
-            )
-            .setDisabled(disabled);
-
-    return new ActionRowBuilder()
-        .addComponents(button);
-}
-
-
-// ============================================================
-// START COMMAND
-// ============================================================
-
-async function startGiveaway(
-    interaction
-) {
-
-    const name =
-        interaction.options.getString(
-            "name"
-        );
-
-    const description =
-        interaction.options.getString(
-            "description"
-        );
-
-    const durationInput =
-        interaction.options.getString(
-            "duration"
-        );
-
-    if (!name) {
-
-        await interaction.editReply(
-            "❌ You must provide a giveaway name."
-        );
-
+async function handleGiveawayButton(interaction) {
+    try {
+        await interaction.deferUpdate();
+    } catch (error) {
+        console.error("❌ Failed to acknowledge giveaway button:", error);
         return;
     }
 
-    if (!description) {
+    const giveawayId = interaction.customId.split(":")[3];
 
-        await interaction.editReply(
-            "❌ You must provide a giveaway description."
-        );
+    const replyPrivately = async (content) => {
+        try {
+            await interaction.followUp({
+                content,
+                flags: MessageFlags.Ephemeral,
+            });
+        } catch (error) {
+            console.error("❌ Failed to send giveaway button response:", error);
+        }
+    };
 
+    if (!giveawayId) {
+        await replyPrivately("❌ Invalid giveaway button.");
         return;
     }
 
-    const durationMs =
-        parseDuration(
-            durationInput
-        );
-
-    if (!durationMs) {
-
-        await interaction.editReply(
-            "❌ Invalid duration. Use formats like `30s`, `10m`, `2h`, or `1d`."
-        );
-
+    if (interaction.user.bot) {
+        await replyPrivately("❌ Bots cannot participate.");
         return;
     }
 
-
-    // --------------------------------------------------------
-    // LOCK
-    // --------------------------------------------------------
-
-    const locked =
-        await acquireGiveawayLock();
+    const locked = await acquireGiveawayLock();
 
     if (!locked) {
-
-        await interaction.editReply(
-            "⚠️ Another giveaway operation is currently running."
-        );
-
+        await replyPrivately("⚠️ Please try again in a moment.");
         return;
     }
 
+    let successMessage = null;
+    let updatedGiveaway = null;
+    let updatedCount = 0;
 
     try {
+        const giveaway = await getGiveaway(giveawayId);
 
-        const activeId =
-            await getActiveGiveawayId();
-
-        if (activeId) {
-
-            await interaction.editReply(
-                "⚠️ A giveaway is already active."
+        if (!giveaway || giveaway.status !== "active") {
+            successMessage = "❌ This giveaway is no longer active.";
+        } else if (Date.now() >= giveaway.endsAt || giveaway.expired) {
+            // The giveaway remains stored and active for staff to end,
+            // but participants can no longer enter after its expiry.
+            successMessage = "⏰ This giveaway has expired. Entries are closed.";
+        } else {
+            const added = await addParticipant(
+                giveawayId,
+                interaction.user.id
             );
-
-            return;
-        }
-
-
-        const now =
-            Date.now();
-
-        const giveaway = {
-
-            id:
-                generateGiveawayId(),
-
-            guildId:
-                interaction.guildId,
-
-            channelId:
-                interaction.channelId,
-
-            messageId:
-                null,
-
-            name,
-
-            description,
-
-            durationMs,
-
-            startedAt:
-                now,
-
-            endsAt:
-                now + durationMs,
-
-            status:
-                "active",
-
-            startedBy:
-                interaction.user.id,
-
-            winnerId:
-                null,
-
-            participantCountAtEnd:
-                0,
-
-            endingReason:
-                null,
-
-            finishedAt:
-                null,
-        };
-
-
-        // Save state FIRST
-        await saveGiveaway(
-            giveaway
-        );
-
-        await setActiveGiveawayId(
-            giveaway.id
-        );
-
-
-        // ----------------------------------------------------
-        // PRIVATE START CONFIRMATION
-        // ----------------------------------------------------
-
-        // The original /giveaway interaction stays private.
-        // This is ONLY the staff/admin confirmation.
-        await interaction.editReply({
-
-            content:
-                `✅ **Giveaway started!**\n\n` +
-                `🎁 **${name}**\n` +
-                `⏳ Ends <t:${Math.floor(giveaway.endsAt / 1000)}:R>`,
-        });
-
-
-        // ----------------------------------------------------
-        // PUBLIC GIVEAWAY MESSAGE
-        // ----------------------------------------------------
-
-        // IMPORTANT:
-        // Do NOT use channel.send().
-        // The bot operates through user-level interaction/webhook
-        // permissions only. The public giveaway is a NON-EPHEMERAL
-        // follow-up sent after the private confirmation above.
-        const message =
-            await interaction.followUp({
-
-                content: null,
-
-                embeds: [
-                    createGiveawayEmbed(
-                        giveaway,
-                        0
-                    ),
-                ],
-
-                components: [
-                    createParticipateRow(
-                        giveaway.id
-                    ),
-                ],
-
-                ephemeral: false,
-
-                fetchReply: true,
-            });
-
-
-        giveaway.messageId =
-            message.id;
-
-        await saveGiveaway(
-            giveaway
-        );
-
-
-        // ----------------------------------------------------
-        // KEEP ORIGINAL INTERACTION FOR FOLLOW-UP
-        // ----------------------------------------------------
-
-        activeInteractions.set(
-            giveaway.id,
-            interaction
-        );
-
-        // ----------------------------------------------------
-        // START TIMER
-        // ----------------------------------------------------
-
-        scheduleGiveawayEnd(
-            interaction.client,
-            giveaway
-        );
-
-
-        await interaction.editReply(
-            `✅ Giveaway **${name}** started successfully.`
-        );
-
-    }
-
-    catch (error) {
-
-        console.error(
-            "❌ Giveaway start error:",
-            error
-        );
-
-        await clearActiveGiveawayId();
-
-        await interaction.editReply(
-            "❌ Failed to start the giveaway."
-        );
-
-    }
-
-    finally {
-
-        await releaseGiveawayLock();
-    }
-}
-
-
-// ============================================================
-// END TIMER
-// ============================================================
-
-function scheduleGiveawayEnd(
-    client,
-    giveaway
-) {
-
-    const existing =
-        timers.get(
-            giveaway.id
-        );
-
-    if (existing) {
-        clearTimeout(existing);
-    }
-
-    const delay =
-        Math.max(
-            0,
-            giveaway.endsAt -
-            Date.now()
-        );
-
-    const timer =
-        setTimeout(
-            () => {
-
-                endGiveaway(
-                    client,
-                    giveaway.id,
-                    "expired",
-                    activeInteractions.get(giveaway.id) || null
-                ).catch(error =>
-                    console.error(
-                        "❌ Automatic giveaway ending failed:",
-                        error
-                    )
-                );
-
-            },
-            delay
-        );
-
-    timers.set(
-        giveaway.id,
-        timer
-    );
-}
-
-
-// ============================================================
-// BUTTON HANDLER
-// ============================================================
-
-async function handleGiveawayButton(interaction) {
-
-    // --------------------------------------------------------
-    // ACKNOWLEDGE IMMEDIATELY
-    // --------------------------------------------------------
-
-    try {
-        await interaction.deferReply({
-            flags: MessageFlags.Ephemeral,
-        });
-    } catch (error) {
-        console.error(
-            "❌ Failed to acknowledge giveaway button:",
-            error
-        );
-
-        return;
-    }
-
-
-    const client =
-        interaction.client;
-
-
-    try {
-
-        // ----------------------------------------------------
-        // GET GIVEAWAY ID
-        // ----------------------------------------------------
-
-        const giveawayId =
-            interaction.customId.split(":")[3];
-
-
-        if (!giveawayId) {
-
-            await interaction.editReply(
-                "❌ Invalid giveaway button."
-            );
-
-            return;
-        }
-
-
-        // ----------------------------------------------------
-        // BLOCK BOTS
-        // ----------------------------------------------------
-
-        if (interaction.user.bot) {
-
-            await interaction.editReply(
-                "❌ Bots cannot participate."
-            );
-
-            return;
-        }
-
-
-        // ----------------------------------------------------
-        // GET GIVEAWAY
-        // ----------------------------------------------------
-
-        const giveaway =
-            await getGiveaway(
-                giveawayId
-            );
-
-
-        if (
-            !giveaway ||
-            giveaway.status !== "active"
-        ) {
-
-            await interaction.editReply(
-                "❌ This giveaway is no longer active."
-            );
-
-            return;
-        }
-
-
-        // ----------------------------------------------------
-        // CHECK EXPIRY
-        // ----------------------------------------------------
-
-        if (
-            Date.now() >=
-            giveaway.endsAt
-        ) {
-
-            await interaction.editReply(
-                "⏰ This giveaway has ended."
-            );
-
-            return;
-        }
-
-
-        // ----------------------------------------------------
-        // ACQUIRE LOCK
-        // ----------------------------------------------------
-
-        const locked =
-            await acquireGiveawayLock();
-
-
-        if (!locked) {
-
-            await interaction.editReply(
-                "⚠️ Please try again in a moment."
-            );
-
-            return;
-        }
-
-
-        try {
-
-            // ------------------------------------------------
-            // RE-CHECK AFTER LOCK
-            // ------------------------------------------------
-
-            const current =
-                await getGiveaway(
-                    giveawayId
-                );
-
-
-            if (
-                !current ||
-                current.status !== "active"
-            ) {
-
-                await interaction.editReply(
-                    "❌ This giveaway is no longer active."
-                );
-
-                return;
-            }
-
-
-            if (
-                Date.now() >=
-                current.endsAt
-            ) {
-
-                await interaction.editReply(
-                    "⏰ This giveaway has ended."
-                );
-
-                return;
-            }
-
-
-            // ------------------------------------------------
-            // ADD PARTICIPANT
-            // ------------------------------------------------
-
-            const added =
-                await addParticipant(
-                    giveawayId,
-                    interaction.user.id
-                );
-
 
             if (added === 0) {
-
-                await interaction.editReply(
-                    "⚠️ You are already participating in this giveaway!"
-                );
-
-                return;
+                successMessage =
+                    "⚠️ You are already participating in this giveaway!";
+            } else {
+                updatedCount = await getParticipantCount(giveawayId);
+                updatedGiveaway = giveaway;
+                successMessage =
+                    "✅ You have entered the giveaway! Good luck! 🎉";
             }
-
-
-            // ------------------------------------------------
-            // SUCCESS
-            // ------------------------------------------------
-
-            await interaction.editReply(
-                "✅ You have entered the giveaway! Good luck! 🎉"
-            );
-
-        } finally {
-
-            await releaseGiveawayLock();
-
         }
-
     } catch (error) {
-
-        console.error(
-            "❌ GIVEAWAY BUTTON ERROR:",
-            error
-        );
-
-
-        try {
-
-            await interaction.editReply(
-                "❌ Something went wrong while joining the giveaway."
-            );
-
-        } catch (replyError) {
-
-            console.error(
-                "❌ Failed to send giveaway error response:",
-                replyError
-            );
-
-        }
-
+        console.error("❌ GIVEAWAY BUTTON ERROR:", error);
+        successMessage =
+            "❌ Something went wrong while joining the giveaway.";
+    } finally {
+        await releaseGiveawayLock();
     }
+
+    if (updatedGiveaway) {
+        try {
+            await interaction.editReply({
+                embeds: [
+                    createGiveawayEmbed(updatedGiveaway, updatedCount),
+                ],
+                components: [createParticipateRow(giveawayId)],
+            });
+        } catch (error) {
+            console.error(
+                "⚠️ Participant saved, but giveaway count could not refresh:",
+                error
+            );
+        }
+    }
+
+    await replyPrivately(successMessage);
 }
 
-
 // ============================================================
-// END GIVEAWAY
+// END GIVEAWAY / SELECT WINNER
 // ============================================================
 
 async function endGiveaway(
     client,
     giveawayId,
     reason = "manual",
-    followUpInteraction = null
+    announcementInteraction = null
 ) {
-
-    const locked =
-        await acquireGiveawayLock();
+    const locked = await acquireGiveawayLock();
 
     if (!locked) {
-        console.log(
-            "⚠️ Giveaway end lock busy."
-        );
-        return;
+        if (announcementInteraction) {
+            await announcementInteraction.editReply(
+                "⚠️ Another giveaway operation is currently running. Try again shortly."
+            ).catch(() => {});
+        }
+        return null;
     }
 
     let completedGiveaway = null;
-    let participants = [];
 
     try {
+        const current = await getGiveaway(giveawayId);
 
-        const current =
-            await getGiveaway(
-                giveawayId
-            );
-
-        if (!current) {
-            return;
+        if (!current || current.status !== "active") {
+            return null;
         }
 
-        // Another end operation may have already completed it.
-        if (current.status === "completed") {
-            return;
-        }
-
-        // Pull the complete participant list directly from Redis.
-        participants =
-            await getParticipants(
-                giveawayId
-            );
-
-        console.log(
-            `🎟️ GIVEAWAY PARTICIPANTS | ${participants.length}`
-        );
-
-        // --------------------------------------------------------
-        // SELECT WINNER DIRECTLY
-        // --------------------------------------------------------
-
+        const participants = await getParticipants(giveawayId);
         let winnerId = null;
 
         if (participants.length > 0) {
-            const winnerIndex =
-                crypto.randomInt(
-                    0,
-                    participants.length
-                );
+            const previousWinnerId = await getPreviousWinnerId();
 
-            winnerId =
-                participants[winnerIndex];
+            const previousWinnerParticipated =
+                previousWinnerId &&
+                participants.includes(previousWinnerId);
+
+            const otherParticipants = previousWinnerParticipated
+                ? participants.filter(id => id !== previousWinnerId)
+                : participants;
+
+            if (
+                previousWinnerParticipated &&
+                otherParticipants.length > 0
+            ) {
+                // Previous winner has a 1% chance.
+                // Everyone else shares the remaining 99%.
+                if (crypto.randomInt(0, 100) === 0) {
+                    winnerId = previousWinnerId;
+                } else {
+                    winnerId = otherParticipants[
+                        crypto.randomInt(0, otherParticipants.length)
+                    ];
+                }
+            } else {
+                winnerId = participants[
+                    crypto.randomInt(0, participants.length)
+                ];
+            }
         }
 
-        // --------------------------------------------------------
-        // COMPLETE STATE FIRST
-        // --------------------------------------------------------
+        current.status = "completed";
+        current.winnerId = winnerId;
+        current.participantCountAtEnd = participants.length;
+        current.endingReason = reason;
+        current.finishedAt = Date.now();
 
-        current.status =
-            "completed";
+        await saveGiveaway(current);
 
-        current.winnerId =
-            winnerId;
-
-        current.participantCountAtEnd =
-            participants.length;
-
-        current.endingReason =
-            reason;
-
-        current.finishedAt =
-            Date.now();
-
-        // Redis is updated BEFORE any Discord announcement.
-        await saveGiveaway(
-            current
-        );
+        if (winnerId) {
+            await setPreviousWinnerId(winnerId);
+        }
 
         await clearActiveGiveawayId();
-
         completedGiveaway = current;
 
-        // Stop the in-memory timer.
-        const timer =
-            timers.get(current.id);
+        const timer = giveawayTimers.get(giveawayId);
 
         if (timer) {
             clearTimeout(timer);
-            timers.delete(current.id);
+            giveawayTimers.delete(giveawayId);
         }
-
     } finally {
-
         await releaseGiveawayLock();
     }
 
-    if (!completedGiveaway) {
-        return;
-    }
+    if (!completedGiveaway) return null;
 
-    // ------------------------------------------------------------
-    // DISCORD UI / ANNOUNCEMENT
-    // ------------------------------------------------------------
+    await showWinner(client, completedGiveaway, announcementInteraction);
+    activeInteractions.delete(completedGiveaway.id);
 
-    await showWinner(
-        client,
-        completedGiveaway,
-        followUpInteraction ||
-            activeInteractions.get(completedGiveaway.id) ||
-            null
-    );
-
-    activeInteractions.delete(
-        completedGiveaway.id
-    );
+    return completedGiveaway;
 }
 
-
 // ============================================================
-// NO WINNER / COMPLETED MESSAGE
+// PUBLIC WINNER ANNOUNCEMENT
 // ============================================================
 
 async function showWinner(
     client,
     giveaway,
-    followUpInteraction = null
+    announcementInteraction = null
 ) {
+    const originalInteraction =
+        activeInteractions.get(giveaway.id) || null;
 
-    const uiInteraction =
-        followUpInteraction ||
-        activeInteractions.get(giveaway.id) ||
-        null;
-
-    if (!uiInteraction?.webhook) {
-        return;
-    }
-
-    // --------------------------------------------------------
-    // NO PARTICIPANTS
-    // --------------------------------------------------------
-
-    if (!giveaway.winnerId) {
-
+    if (announcementInteraction) {
         try {
-            await uiInteraction.webhook.editMessage(
-                giveaway.messageId,
-                {
-                    content: null,
-                    embeds: [
-                        createGiveawayEmbed(
-                            giveaway,
-                            giveaway.participantCountAtEnd
-                        ),
-                    ],
-                    components: [],
-                }
-            );
-        } catch {
-            // Expected if the interaction webhook has expired.
-        }
-
-        return;
-    }
-
-    const embed =
-        new EmbedBuilder()
-            .setTitle("🏆 Giveaway")
-            .setDescription(
-                `**Giveaway for:** ${giveaway.name}\n\n` +
-                `Congratulations <@${giveaway.winnerId}>! 🎉\n` +
-                `You won this giveaway!`
-            )
-            .addFields({
-                name: "👥 Participants",
-                value: String(
-                    giveaway.participantCountAtEnd
-                ),
-                inline: true,
+            // Public /giveaway end interaction response becomes the
+            // winner announcement. No channel.send() permission needed.
+            await announcementInteraction.editReply({
+                content: giveaway.winnerId
+                    ? `🎉 Congratulations <@${giveaway.winnerId}>!`
+                    : "The giveaway has ended.",
+                embeds: [createWinnerEmbed(giveaway)],
             });
-
-    // Announce through the interaction webhook only.
-    try {
-        await uiInteraction.followUp({
-            content: `<@${giveaway.winnerId}>`,
-            embeds: [embed],
-            ephemeral: false,
-        });
-    } catch {
-        // Expected if the interaction webhook has expired.
+        } catch (error) {
+            console.error("❌ Could not publish winner announcement:", error);
+        }
     }
 
-    // Replace the original giveaway message with the completed state.
-    if (giveaway.messageId) {
+    // Best-effort update of the original giveaway post. Its interaction
+    // webhook may have expired; this is not required for winner selection.
+    if (originalInteraction?.webhook && giveaway.messageId) {
         try {
-            await uiInteraction.webhook.editMessage(
+            await originalInteraction.webhook.editMessage(
                 giveaway.messageId,
                 {
-                    content: null,
                     embeds: [
                         createGiveawayEmbed(
                             giveaway,
                             giveaway.participantCountAtEnd
                         ),
                     ],
-                    components: [],
+                    components: [createParticipateRow(giveaway.id, true)],
                 }
             );
-        } catch {
-            // Expected if the interaction webhook has expired.
+        } catch (error) {
+            console.warn(
+                "⚠️ Could not update original giveaway post:",
+                error.message
+            );
         }
     }
 }
-
 
 // ============================================================
 // COMMAND HANDLER
 // ============================================================
 
-async function handleGiveawayCommand(
-    interaction
-) {
-
-    if (
-        !hasCommandAccess(
-            "giveaway",
-            interaction.user.id
-        )
-    ) {
-
+async function handleGiveawayCommand(interaction) {
+    if (!hasCommandAccess("giveaway", interaction.user.id)) {
         await interaction.reply({
-
-            content:
-                "❌ You are not authorized to manage Pierro.",
-
-            flags:
-                MessageFlags.Ephemeral,
+            content: "❌ You are not authorized to manage Pierro.",
+            flags: MessageFlags.Ephemeral,
         });
-
         return;
     }
 
+    const action = interaction.options.getString("action", true);
 
-    const action =
-        interaction.options.getString(
-            "action",
-            true
-        );
+    // Public response, sent through the slash-command interaction webhook.
+    await interaction.deferReply();
 
-
-    await interaction.deferReply({
-        flags:
-            MessageFlags.Ephemeral,
-    });
-
-
-    if (
-        action === "start"
-    ) {
-
-        await startGiveaway(
-            interaction
-        );
-
+    if (action === "start") {
+        await startGiveaway(interaction);
         return;
     }
 
-
-    if (
-        action === "end"
-    ) {
-
-        const activeId =
-            await getActiveGiveawayId();
+    if (action === "end") {
+        const activeId = await getActiveGiveawayId();
 
         if (!activeId) {
-
             await interaction.editReply(
                 "ℹ️ There is no active giveaway."
             );
-
             return;
         }
 
-
-        await endGiveaway(
+        const result = await endGiveaway(
             interaction.client,
             activeId,
             "manual",
             interaction
         );
 
-
-        await interaction.editReply(
-            "🏆 Giveaway ended successfully."
-        );
-
-        return;
+        if (!result) {
+            await interaction.editReply(
+                "⚠️ The giveaway could not be ended. Please try again."
+            );
+        }
+        // On success, showWinner() has already edited this public response.
     }
 }
-
 
 // ============================================================
 // RESTORE AFTER RESTART
 // ============================================================
 
-async function restoreGiveaway(
-    client
-) {
-
+async function restoreGiveaway(client) {
     try {
+        const activeId = await getActiveGiveawayId();
 
-        const activeId =
-            await getActiveGiveawayId();
+        if (!activeId) return;
 
-        if (!activeId) {
-            return;
-        }
+        const giveaway = await getGiveaway(activeId);
 
-
-        const giveaway =
-            await getGiveaway(
-                activeId
-            );
-
-        if (!giveaway) {
-
+        if (!giveaway || giveaway.status !== "active") {
             await clearActiveGiveawayId();
-
             return;
         }
-
 
         console.log(
-            `🎁 Restoring giveaway ${giveaway.id} | Status: ${giveaway.status}`
+            `🎁 Restored giveaway ${giveaway.id} | ` +
+            `Expires: ${new Date(giveaway.endsAt).toISOString()}`
         );
 
-
-        if (
-            giveaway.status ===
-            "completed"
-        ) {
-
-            await clearActiveGiveawayId();
-
-            return;
+        if (Date.now() >= giveaway.endsAt) {
+            // Expired while the bot was offline: notify staff now.
+            await notifyStaffGiveawayExpired(client, giveaway.id);
+        } else {
+            scheduleGiveawayExpiry(client, giveaway);
         }
-
-
-        if (
-            Date.now() >=
-            giveaway.endsAt
-        ) {
-
-            await endGiveaway(
-                client,
-                giveaway.id,
-                "expired"
-            );
-
-            return;
-        }
-
-
-        // Giveaway still active
-        scheduleGiveawayEnd(
-            client,
-            giveaway
-        );
-
-
-    }
-
-    catch (error) {
-
-        console.error(
-            "❌ Giveaway restore failed:",
-            error
-        );
+    } catch (error) {
+        console.error("❌ Giveaway restore failed:", error);
     }
 }
 
-const giveawayCommand =
-    new SlashCommandBuilder()
-        .setName("giveaway")
-        .setDescription(
-            "Manage a Pierro giveaway."
-        )
-        .addStringOption(option =>
-            option
-                .setName("action")
-                .setDescription(
-                    "Start or end the giveaway."
-                )
-                .setRequired(true)
-                .addChoices(
-                    {
-                        name: "start",
-                        value: "start",
-                    },
-                    {
-                        name: "end",
-                        value: "end",
-                    }
-                )
-        )
-        .addStringOption(option =>
-            option
-                .setName("name")
-                .setDescription(
-                    "Giveaway name."
-                )
-                .setRequired(true)
-        )
-        .addStringOption(option =>
-            option
-                .setName("description")
-                .setDescription(
-                    "Giveaway description."
-                )
-                .setRequired(true)
-        )
-        .addStringOption(option =>
-            option
-                .setName("duration")
-                .setDescription(
-                    "Examples: 30s, 10m, 2h, 1d."
-                )
-                .setRequired(true)
-        );
+// ============================================================
+// SLASH COMMAND
+// ============================================================
+
+const giveawayCommand = new SlashCommandBuilder()
+    .setName("giveaway")
+    .setDescription("Manage a Pierro giveaway.")
+    .addStringOption(option =>
+        option
+            .setName("action")
+            .setDescription("Start or end the giveaway.")
+            .setRequired(true)
+            .addChoices(
+                { name: "start", value: "start" },
+                { name: "end", value: "end" }
+            )
+    )
+    .addStringOption(option =>
+        option
+            .setName("title")
+            .setDescription("Giveaway title (required for start).")
+            .setRequired(false)
+    )
+    .addStringOption(option =>
+        option
+            .setName("description")
+            .setDescription("Giveaway description (required for start).")
+            .setRequired(false)
+    )
+    .addStringOption(option =>
+        option
+            .setName("duration")
+            .setDescription("Examples: 30s, 10m, 2h, 1d (maximum 30 days).")
+            .setRequired(false)
+    );
+
 module.exports = {
     giveawayCommand,
     handleGiveawayCommand,
