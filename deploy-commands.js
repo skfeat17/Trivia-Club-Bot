@@ -26,11 +26,15 @@ const {
 const {
     domainCommand,
 } = require("./src/services/domain/domain");
+const {
+    leaderboardCommand,
+} = require("./src/services/leaderboard");
 const commands = [
     triviaCommand.toJSON(),
     cooldownCommand.toJSON(),
     statsCommand.toJSON(),
     giveawayCommand.toJSON(),
+        leaderboardCommand.toJSON(),
     // dropCommand.toJSON(),
     // domainCommand.toJSON()
 ];

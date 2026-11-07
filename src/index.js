@@ -30,7 +30,10 @@ const {
     statsCommand,
     handleStatsCommand,
 } = require("./services/stats");
-
+const {
+    leaderboardCommand,
+    handleLeaderboardCommand,
+} = require("./services/leaderboard");
 const {
     handleTriviaStartButton,
     handleTriviaAnswer,
@@ -76,7 +79,7 @@ client.commands.set(
     "stats",
     statsCommand
 );
-
+client.commands.set("leaderboard", leaderboardCommand);
 /*
 |--------------------------------------------------------------------------
 | OPTIONAL HOSTING HTTP SERVER
@@ -160,6 +163,10 @@ client.on(
             if (
                 interaction.isChatInputCommand()
             ) {
+                if (interaction.commandName === "leaderboard") {
+                    await handleLeaderboardCommand(interaction);
+                    return;
+                }
                 if (interaction.commandName === "domain") {
                     await handleDomainCommand(interaction);
                     return;

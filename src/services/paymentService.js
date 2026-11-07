@@ -337,6 +337,26 @@ async function handlePaymentButton(interaction) {
             return true;
         }
 
+        // The payment service is shared by multiple Pierro games.
+        // Only Permanent Trivia rewards belong in this leaderboard.
+        if (String(updated.game || "").toLowerCase().includes("trivia")) {
+            try {
+                const { recordMoraSpent } = require("./leaderboardService");
+                await recordMoraSpent(
+                    updated.winnerId,
+                    updated.reward,
+                    "permanent_trivia_reward",
+                    updated.paidAt || Date.now(),
+                    updated.transactionId
+                );
+            } catch (statsError) {
+                console.error(
+                    `❌ TRIVIA SPENDING STATS FAILED | ${transactionId} |`,
+                    statsError
+                );
+            }
+        }
+
         // Update the clicked DM first; other staff DMs update concurrently.
         await updateAllPaymentMessages(
             interaction.client,
